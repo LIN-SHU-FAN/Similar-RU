@@ -54,7 +54,6 @@ StrSlash    db '/', '$'
 StrHint     db 'PgUp/PgDn to scroll, Q to quit', '$'
 
 
-
 TargetVID       dw 0
 TargetDID       dw 0
 MidTmp          dw 0
@@ -436,7 +435,9 @@ Digit:
         ret
 HexNibbleToAscii endp
 
-; AL = value, prints 2 hex chars
+; BIOS version of PrintHex8 / PrintHex16
+; --------------------------------------------------
+; AL = value, prints 2 hex chars using BIOS
 PrintHex8 proc
         push    ax
         push    bx
@@ -447,17 +448,13 @@ PrintHex8 proc
         mov     al, bl
         shr     al, 4
         call    HexNibbleToAscii
-        mov     dl, al
-        mov     ah, 02h
-        int     21h
+        call    BiosPutChar
 
         ; low nibble
         mov     al, bl
         and     al, 0Fh
         call    HexNibbleToAscii
-        mov     dl, al
-        mov     ah, 02h
-        int     21h
+        call    BiosPutChar
 
         pop     bx
         pop     ax
@@ -465,16 +462,49 @@ PrintHex8 proc
 PrintHex8 endp
 
 
-; AX = value, prints 4 hex chars
+; AX = value, prints 4 hex chars using BIOS
 PrintHex16 proc
         push    ax
-
         mov     al, ah
         call    PrintHex8
         pop     ax
         call    PrintHex8
         ret
 PrintHex16 endp
+
+
+
+; Print one char in AL using BIOS teletype
+; Uses: AH=0Eh, BH=page(0), BL=attr(07h)
+BiosPutChar proc
+        push    ax
+        push    bx
+        mov     ah, 0Eh
+        mov     bh, 0
+        mov     bl, 07h
+        int     10h
+        pop     bx
+        pop     ax
+        ret
+BiosPutChar endp
+
+
+; Print $-terminated string at DS:DX using BIOS teletype
+BiosPrintStringDollar proc
+        push    ax
+        push    si
+        mov     si, dx
+@@L:
+        lodsb
+        cmp     al, '$'
+        je      @@Done
+        call    BiosPutChar
+        jmp     @@L
+@@Done:
+        pop     si
+        pop     ax
+        ret
+BiosPrintStringDollar endp
 
 
 
@@ -505,75 +535,6 @@ ClearScreen proc
         ret
 ClearScreen endp
 
-; --------------------------------------------
-; PrintPage
-; uses CurPage, PCICount, PCIList
-; prints PAGE_SIZE entries per page
-; --------------------------------------------
-PrintPage proc
-        push ax
-        push bx
-        push cx
-        push dx
-        push si
-        push di
-
-        call ClearScreen
-
-        ; start = CurPage * PAGE_SIZE
-        mov     ax, CurPage
-        mov     bx, PAGE_SIZE
-        mul     bx              ; DX:AX = CurPage*10 (AX enough)
-        mov     si, ax          ; SI = start index
-
-        ; for i=0..9:
-        xor     cx, cx          ; i = 0
-
-NextLine:
-        cmp     cx, PAGE_SIZE
-        jae     Footer
-
-        ; idx = start + i
-        mov     ax, si
-        add     ax, cx
-
-        ; if idx >= PCICount => stop page
-        cmp     ax, PCICount
-        jae     Footer
-
-        ; DI = idx * SIZE PCI_ENTRY
-        mov     bx, SIZE PCI_ENTRY
-        mul     bx              ; AX = idx*size
-        mov     di, ax
-
-        call    PrintOnePCIEntry
-
-        inc     cx
-        jmp     NextLine
-
-Footer:
-        ; (可選) 印一行提示
-        mov     dx, offset StrCRLF
-        mov     ah, 09h
-        int     21h
-
-        mov     dx, offset StrHint
-        mov     ah, 09h
-        int     21h
-
-        mov     dx, offset StrCRLF
-        mov     ah, 09h
-        int     21h
-
-        pop di
-        pop si
-        pop dx
-        pop cx
-        pop bx
-        pop ax
-        ret
-PrintPage endp
-
 
 GetKeyBIOS  proc
         mov ah, 00h
@@ -582,99 +543,12 @@ GetKeyBIOS  proc
 GetKeyBIOS  endp
 
 
-; --------------------------------------------
-; PageLoop
-; PgUp/PgDn change CurPage
-; Q quits
-; --------------------------------------------
-PageLoop proc
-        push ax
-        push bx
-        push dx
-
-        mov CurPage, 0
-
-Show:
-        call PrintPage
-
-KeyWait:
-        call GetKeyBIOS 
-
-        ; Q / q => exit
-        cmp al, 'q'
-        je  Exit
-        cmp al, 'Q'
-        je  Exit
-
-        ; 直接看 scan code（不管 AL 是 00、E0、'9'、'3'）
-        cmp ah, 49h            ; PageUp scan
-        je  DoPgUp
-        cmp ah, 51h            ; PageDown scan
-        je  DoPgDn
-
-        jmp KeyWait
-
-DoPgUp:
-        cmp CurPage, 0
-        je  Show
-        dec CurPage
-        jmp Show
-
-DoPgDn:
-        ; maxPage = (PCICount-1) / PAGE_SIZE
-        mov ax, PCICount
-        cmp ax, 0
-        je  Show
-        dec ax
-        xor dx, dx
-        mov bx, PAGE_SIZE
-        div bx                 ; AX = maxPage
-
-        cmp CurPage, ax
-        jae Show
-        inc CurPage
-        jmp Show
-
-Exit:
-        pop dx
-        pop bx
-        pop ax
-        ret
-PageLoop endp
-
-
-
-PrintAllPCI proc
-        xor     cx, cx              ; index = 0
-
-NextEntry:
-        cmp     cx, PCICount
-        jae     Done
-
-        mov     di, cx
-        imul    di, SIZE PCI_ENTRY
-        call    PrintOnePCIEntry
-
-        inc     cx
-        jmp     NextEntry
-
-Done:
-        ret
-PrintAllPCI endp
-
-; --------------------------------------------------
-; PrintOnePCIEntry
-; input: DI = offset of PCI_ENTRY
-; --------------------------------------------------
+; ==================================================
+; PrintOnePCIEntry (BIOS only)
+; input: DI = offset of PCI_ENTRY in PCIList
+; output: two lines per entry
+; ==================================================
 PrintOnePCIEntry proc
-
-        ; ---- NAME（暫用 Class code）----
-        ; mov     al, PCIList[di].Class
-        ; call    PrintHex8
-
-        ; mov     dx, offset StrSpace
-        ; mov     ah, 09h
-        ; int     21h
 
         ; ---- NAME (RU-like from DB) ----
         mov     ax, PCIList[di].Vendor
@@ -683,22 +557,17 @@ PrintOnePCIEntry proc
         jnc     PrintNameOk
 
         ; fallback: class-based
-        call    GetDeviceName          ; DX=string
-
-        mov     ah, 09h
-        int     21h
-        jmp     NameDone
+        call    GetDeviceName          ; DX = $-terminated string
+        call    BiosPrintStringDollar
+        jmp     NameCRLF
 
 PrintNameOk:
         mov     dx, offset NameBuf
-        mov     ah, 09h
-        int     21h
+        call    BiosPrintStringDollar
 
+NameCRLF:
         mov     dx, offset StrCRLF
-        mov     ah, 09h
-        int     21h
-        
-NameDone:
+        call    BiosPrintStringDollar
 
         ; ---- PCI / PCIe ----
         cmp     PCIList[di].IsPCIe, 1
@@ -711,50 +580,43 @@ PrintPCI:
         mov     dx, offset StrPCI
 
 PrintBus:
-        mov     ah, 09h
-        int     21h
+        call    BiosPrintStringDollar
 
         mov     dx, offset StrSpace
-        mov     ah, 09h
-        int     21h
+        call    BiosPrintStringDollar
 
         ; ---- Vendor:Device ----
         mov     ax, PCIList[di].Vendor
         call    PrintHex16
 
         mov     dx, offset StrColon
-        mov     ah, 09h
-        int     21h
+        call    BiosPrintStringDollar
 
         mov     ax, PCIList[di].Device
         call    PrintHex16
 
         mov     dx, offset StrSpace
-        mov     ah, 09h
-        int     21h
+        call    BiosPrintStringDollar
 
         ; ---- Bus:Dev.Fun ----
         mov     al, PCIList[di].Bus
         call    PrintHex8
 
         mov     dx, offset StrColon
-        mov     ah, 09h
-        int     21h
+        call    BiosPrintStringDollar
 
         mov     al, PCIList[di].Dev
         call    PrintHex8
 
         mov     dx, offset StrDot
-        mov     ah, 09h
-        int     21h
+        call    BiosPrintStringDollar
 
         mov     al, PCIList[di].Fun
         call    PrintHex8
 
         ; ---- newline ----
         mov     dx, offset StrCRLF
-        mov     ah, 09h
-        int     21h
+        call    BiosPrintStringDollar
 
         ret
 PrintOnePCIEntry endp
@@ -785,6 +647,47 @@ SeekAbs32 proc
         ret
 SeekAbs32 endp
 
+
+DbReadCStringToNameBuf proc
+        push    ax
+        push    bx
+        push    cx
+        push    dx
+        push    si
+
+        mov     si, offset NameBuf
+        mov     cx, 63               ; remaining chars
+
+ReadLoop:
+        ; read 1 byte -> TmpCh
+        mov     bx, DbHandle
+        mov     ah, 3Fh
+        mov     dx, offset TmpCh
+        push    cx                   ; keep remaining
+        mov     cx, 1
+        int     21h
+        pop     cx
+        cmp     ax, 1
+        jne     Terminate
+
+        mov     al, TmpCh
+        cmp     al, 0
+        je      Terminate
+
+        mov     [si], al
+        inc     si
+        loop    ReadLoop
+
+Terminate:
+        mov     byte ptr [si], '$'
+
+        pop     si
+        pop     dx
+        pop     cx
+        pop     bx
+        pop     ax
+        ret
+DbReadCStringToNameBuf endp
 
 
 ; input: AX=Vendor, BX=Device
@@ -886,46 +789,7 @@ LookupNameByVidDid endp
 
 
 
-DbReadCStringToNameBuf proc
-        push    ax
-        push    bx
-        push    cx
-        push    dx
-        push    si
 
-        mov     si, offset NameBuf
-        mov     cx, 63               ; remaining chars
-
-ReadLoop:
-        ; read 1 byte -> TmpCh
-        mov     bx, DbHandle
-        mov     ah, 3Fh
-        mov     dx, offset TmpCh
-        push    cx                   ; keep remaining
-        mov     cx, 1
-        int     21h
-        pop     cx
-        cmp     ax, 1
-        jne     Terminate
-
-        mov     al, TmpCh
-        cmp     al, 0
-        je      Terminate
-
-        mov     [si], al
-        inc     si
-        loop    ReadLoop
-
-Terminate:
-        mov     byte ptr [si], '$'
-
-        pop     si
-        pop     dx
-        pop     cx
-        pop     bx
-        pop     ax
-        ret
-DbReadCStringToNameBuf endp
 
 
 
@@ -1060,6 +924,137 @@ CheckUSB:
 Done:
         ret
 GetDeviceName endp
+
+
+
+
+; ==================================================
+; PrintPage (BIOS only)
+; uses CurPage, PCICount, PCIList
+; prints PAGE_SIZE entries per page
+; ==================================================
+PrintPage proc
+        push ax
+        push bx
+        push cx
+        push dx
+        push si
+        push di
+
+        call ClearScreen
+
+        ; start = CurPage * PAGE_SIZE
+        mov     ax, CurPage
+        mov     bx, PAGE_SIZE
+        mul     bx              ; DX:AX = CurPage*10
+        mov     si, ax          ; SI = start index
+
+        xor     cx, cx          ; i = 0
+NextLine:
+        cmp     cx, PAGE_SIZE
+        jae     Footer
+
+        ; idx = start + i
+        mov     ax, si
+        add     ax, cx
+
+        ; if idx >= PCICount => stop page
+        cmp     ax, PCICount
+        jae     Footer
+
+        ; DI = idx * SIZE PCI_ENTRY
+        mov     bx, SIZE PCI_ENTRY
+        mul     bx              ; AX = idx*size
+        mov     di, ax
+
+        call    PrintOnePCIEntry
+
+        inc     cx
+        jmp     NextLine
+
+Footer:
+        ; hint
+        mov     dx, offset StrCRLF
+        call    BiosPrintStringDollar
+
+        mov     dx, offset StrHint
+        call    BiosPrintStringDollar
+
+        mov     dx, offset StrCRLF
+        call    BiosPrintStringDollar
+
+        pop di
+        pop si
+        pop dx
+        pop cx
+        pop bx
+        pop ax
+        ret
+PrintPage endp
+
+
+
+
+
+; --------------------------------------------
+; PageLoop
+; PgUp/PgDn change CurPage
+; Q quits
+; --------------------------------------------
+PageLoop proc
+        push ax
+        push bx
+        push dx
+
+        mov CurPage, 0
+
+Show:
+        call PrintPage
+
+KeyWait:
+        call GetKeyBIOS        ; AL=ASCII, AH=scan
+
+        ; Q / q => exit
+        cmp al, 'q'
+        je  Exit
+        cmp al, 'Q'
+        je  Exit
+
+        ; scan code for PgUp/PgDn
+        cmp ah, 49h            ; PageUp
+        je  DoPgUp
+        cmp ah, 51h            ; PageDown
+        je  DoPgDn
+
+        jmp KeyWait
+
+DoPgUp:
+        cmp CurPage, 0
+        je  Show
+        dec CurPage
+        jmp Show
+
+DoPgDn:
+        ; maxPage = (PCICount-1) / PAGE_SIZE
+        mov ax, PCICount
+        cmp ax, 0
+        je  Show
+        dec ax
+        xor dx, dx
+        mov bx, PAGE_SIZE
+        div bx                 ; AX = maxPage
+
+        cmp CurPage, ax
+        jae Show
+        inc CurPage
+        jmp Show
+
+Exit:
+        pop dx
+        pop bx
+        pop ax
+        ret
+PageLoop endp
 
 
 end Testa
