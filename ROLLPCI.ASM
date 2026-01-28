@@ -41,6 +41,10 @@ MAX_PCI_ENTRY equ 256
 
 PCIList   PCI_ENTRY MAX_PCI_ENTRY dup(<>)
 PCICount  dw 0
+
+
+
+
 CurPage   dw 0
 
 PAGE_SIZE   equ 10
@@ -169,69 +173,28 @@ Fail:
 InitPciDb endp
 
 
-
-
 ; ==================================================
-; BuildPCIList
-; - Scan PCI via CF8/CFC
-; - Fill PCIList[] and PCICount
+; Read Vendor/Device (offset 00h)
+; output: EAX = DevID:VenID
 ; ==================================================
-BuildPCIList proc
-        ; reset count
-        mov     PCICount, 0
-
-        mov     bx, 0                          ; Bus
-Bus_Loop_BL:
-        cmp     bx, BusUpbound
-        ja      Done
-
-        mov     cx, 0                          ; Device
-Dev_Loop_CL:
-        cmp     cx, DevUpbound
-        ja      NextBus
-
-        ; -------- function 0 first --------
-        xor     si, si                         ; Fun = 0
-        call    ReadVendorDevice               ; returns EAX = DevID:VenID
-        cmp     ax, 0FFFFh                     ; if VenID = 0FFFF => not device
-        je      NextDev                        ; no device at fun0
-
-        ; store fun0
-        call    StoreOneEntry
-
-        ; check multi-function (Header Type bit7) at offset 0Ch
-        call    ReadHeaderType                 ; returns AL = HeaderType
-        test    al, 80h
-        jz      NextDev                        ; single function
-
-        ; -------- function 1~7 --------
-        mov     si, 1
-Fun_Loop_SI:
-        cmp     si, FunUpbound
-        ja      NextDev
-
-        call    ReadVendorDevice
-        cmp     ax, 0FFFFh
-        je      NextFun
-
-        call    StoreOneEntry
-
-NextFun:
-        inc     si
-        jmp     Fun_Loop_SI
-
-NextDev:
-        inc     cx
-        jmp     Dev_Loop_CL
-
-NextBus:
-        inc     bx
-        jmp     Bus_Loop_BL
-
-Done:
+ReadVendorDevice proc
+        ; xor     eax , eax
+        mov     al , 00h
+        call    ReadConfigDword
         ret
-BuildPCIList endp
+ReadVendorDevice endp
 
+; ==================================================
+; Read Header Type (offset 0Ch)
+; output: AL = HeaderType (bit7 = multi-function)
+; ==================================================
+ReadHeaderType proc
+        ; xor     eax , eax
+        mov     al, 0Ch
+        call    ReadConfigDword
+        shr     eax, 16                        ; now AL = HeaderType
+        ret
+ReadHeaderType endp
 
 ; ==================================================
 ; Helper: Build CF8 address and read DWORD @ offset
@@ -266,31 +229,6 @@ ReadConfigDword proc
         
         ret
 ReadConfigDword endp
-
-
-; ==================================================
-; Read Vendor/Device (offset 00h)
-; output: EAX = DevID:VenID
-; ==================================================
-ReadVendorDevice proc
-        ; xor     eax , eax
-        mov     al , 00h
-        call    ReadConfigDword
-        ret
-ReadVendorDevice endp
-
-
-; ==================================================
-; Read Header Type (offset 0Ch)
-; output: AL = HeaderType (bit7 = multi-function)
-; ==================================================
-ReadHeaderType proc
-        ; xor     eax , eax
-        mov     al, 0Ch
-        call    ReadConfigDword
-        shr     eax, 16                        ; now AL = HeaderType
-        ret
-ReadHeaderType endp
 
 
 ; ==================================================
@@ -365,8 +303,6 @@ CheckPCIeCapability endp
 ; effect:
 ;   append one PCI_ENTRY into PCIList
 ; ==================================================
-
-
 StoreOneEntry proc
 
         ; if full, just stop storing
@@ -409,6 +345,83 @@ StoreOneEntry proc
 StoreDone:
         ret
 StoreOneEntry endp
+
+
+; ==================================================
+; BuildPCIList
+; - Scan PCI via CF8/CFC
+; - Fill PCIList[] and PCICount
+; ==================================================
+BuildPCIList proc
+        ; reset count
+        mov     PCICount, 0
+
+        mov     bx, 0                          ; Bus
+Bus_Loop_BL:
+        cmp     bx, BusUpbound
+        ja      Done
+
+        mov     cx, 0                          ; Device
+Dev_Loop_CL:
+        cmp     cx, DevUpbound
+        ja      NextBus
+
+        ; -------- function 0 first --------
+        xor     si, si                         ; Fun = 0
+        call    ReadVendorDevice               ; returns EAX = DevID:VenID
+        cmp     ax, 0FFFFh                     ; if VenID = 0FFFF => not device
+        je      NextDev                        ; no device at fun0
+
+        ; store fun0
+        call    StoreOneEntry
+
+        ; check multi-function (Header Type bit7) at offset 0Ch
+        call    ReadHeaderType                 ; returns AL = HeaderType
+        test    al, 80h
+        jz      NextDev                        ; single function
+
+        ; -------- function 1~7 --------
+        mov     si, 1
+Fun_Loop_SI:
+        cmp     si, FunUpbound
+        ja      NextDev
+
+        call    ReadVendorDevice
+        cmp     ax, 0FFFFh
+        je      NextFun
+
+        call    StoreOneEntry
+
+NextFun:
+        inc     si
+        jmp     Fun_Loop_SI
+
+NextDev:
+        inc     cx
+        jmp     Dev_Loop_CL
+
+NextBus:
+        inc     bx
+        jmp     Bus_Loop_BL
+
+Done:
+        ret
+BuildPCIList endp
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -560,6 +573,7 @@ Footer:
         pop ax
         ret
 PrintPage endp
+
 
 GetKeyBIOS  proc
         mov ah, 00h
@@ -773,8 +787,6 @@ SeekAbs32 endp
 
 
 
-; input: AX=Vendor, BX=Device
-; output: CF=0 found (NameBuf ready), CF=1 not found
 ; input: AX=Vendor, BX=Device
 ; output: CF=0 found (NameBuf ready), CF=1 not found
 LookupNameByVidDid proc
