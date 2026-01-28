@@ -41,7 +41,13 @@ MAX_PCI_ENTRY equ 256
 
 PCIList   PCI_ENTRY MAX_PCI_ENTRY dup(<>)
 PCICount  dw 0
-;CurPage   dw 0
+CurPage   dw 0
+
+PAGE_SIZE   equ 10
+
+StrPage     db 'Page ', '$'
+StrSlash    db '/', '$'
+StrHint     db 'PgUp/PgDn to scroll, Q to quit', '$'
 
 
 
@@ -108,7 +114,7 @@ Testa proc far
 
         call    InitPciDb
         call    BuildPCIList
-        call    PrintAllPCI
+        call    PageLoop
         
 
         ret
@@ -456,6 +462,171 @@ PrintHex16 proc
         call    PrintHex8
         ret
 PrintHex16 endp
+
+
+
+
+ClearScreen proc
+        push ax
+        push bx
+        push cx
+        push dx
+
+        ; Scroll up whole screen (clear)
+        mov  ax, 0600h      ; AH=06 scroll up, AL=0 clear
+        mov  bh, 07h        ; attribute
+        mov  cx, 0000h      ; upper-left (row0,col0)
+        mov  dx, 184Fh      ; lower-right (row24,col79)
+        int  10h
+
+        ; Cursor to (0,0)
+        mov  ah, 02h
+        mov  bh, 0
+        mov  dx, 0000h
+        int  10h
+
+        pop dx
+        pop cx
+        pop bx
+        pop ax
+        ret
+ClearScreen endp
+
+; --------------------------------------------
+; PrintPage
+; uses CurPage, PCICount, PCIList
+; prints PAGE_SIZE entries per page
+; --------------------------------------------
+PrintPage proc
+        push ax
+        push bx
+        push cx
+        push dx
+        push si
+        push di
+
+        call ClearScreen
+
+        ; start = CurPage * PAGE_SIZE
+        mov     ax, CurPage
+        mov     bx, PAGE_SIZE
+        mul     bx              ; DX:AX = CurPage*10 (AX enough)
+        mov     si, ax          ; SI = start index
+
+        ; for i=0..9:
+        xor     cx, cx          ; i = 0
+
+NextLine:
+        cmp     cx, PAGE_SIZE
+        jae     Footer
+
+        ; idx = start + i
+        mov     ax, si
+        add     ax, cx
+
+        ; if idx >= PCICount => stop page
+        cmp     ax, PCICount
+        jae     Footer
+
+        ; DI = idx * SIZE PCI_ENTRY
+        mov     bx, SIZE PCI_ENTRY
+        mul     bx              ; AX = idx*size
+        mov     di, ax
+
+        call    PrintOnePCIEntry
+
+        inc     cx
+        jmp     NextLine
+
+Footer:
+        ; (可選) 印一行提示
+        mov     dx, offset StrCRLF
+        mov     ah, 09h
+        int     21h
+
+        mov     dx, offset StrHint
+        mov     ah, 09h
+        int     21h
+
+        mov     dx, offset StrCRLF
+        mov     ah, 09h
+        int     21h
+
+        pop di
+        pop si
+        pop dx
+        pop cx
+        pop bx
+        pop ax
+        ret
+PrintPage endp
+
+GetKeyBIOS  proc
+        mov ah, 00h
+        int 16h            ; returns AL=ASCII, AH=scan
+        ret
+GetKeyBIOS  endp
+
+
+; --------------------------------------------
+; PageLoop
+; PgUp/PgDn change CurPage
+; Q quits
+; --------------------------------------------
+PageLoop proc
+        push ax
+        push bx
+        push dx
+
+        mov CurPage, 0
+
+Show:
+        call PrintPage
+
+KeyWait:
+        call GetKeyBIOS 
+
+        ; Q / q => exit
+        cmp al, 'q'
+        je  Exit
+        cmp al, 'Q'
+        je  Exit
+
+        ; 直接看 scan code（不管 AL 是 00、E0、'9'、'3'）
+        cmp ah, 49h            ; PageUp scan
+        je  DoPgUp
+        cmp ah, 51h            ; PageDown scan
+        je  DoPgDn
+
+        jmp KeyWait
+
+DoPgUp:
+        cmp CurPage, 0
+        je  Show
+        dec CurPage
+        jmp Show
+
+DoPgDn:
+        ; maxPage = (PCICount-1) / PAGE_SIZE
+        mov ax, PCICount
+        cmp ax, 0
+        je  Show
+        dec ax
+        xor dx, dx
+        mov bx, PAGE_SIZE
+        div bx                 ; AX = maxPage
+
+        cmp CurPage, ax
+        jae Show
+        inc CurPage
+        jmp Show
+
+Exit:
+        pop dx
+        pop bx
+        pop ax
+        ret
+PageLoop endp
 
 
 
