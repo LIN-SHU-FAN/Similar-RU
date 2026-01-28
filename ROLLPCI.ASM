@@ -7,21 +7,47 @@ include inc\Struct.inc
 
 .data
 
-DbHandle    dw 0FFFFh
-DbCount     dw 0
+PSP             dw 0
 
-DbStrBase   dd 0              ; DWORD !!!
 
-DbFilename  db 'PCIDB.BIN',0
+DbHandle        dw 0FFFFh
+DbCount         dw 0
+DbStrBase       dd 0              
+DbFilename      db 'PCIDB.BIN',0
 
-EntryBuf    db 8 dup(0)       ; VID(2) DID(2) OFF(4)
-TmpCh       db 0
-NameBuf     db 64 dup('$')
+EntryBuf        db 8 dup(0)       ; VID(2) DID(2) OFF(4)
+TmpCh           db 0
+NameBuf         db 64 dup('$')
 
-TargetVID   dw 0
-TargetDID   dw 0
-MidTmp      dw 0
 
+
+BusUpbound      dw 255
+DevUpbound      dw 31
+FunUpbound      dw 7
+
+PCI_ENTRY struct
+    Bus     db ?
+    Dev     db ?
+    Fun     db ?
+    Vendor  dw ?
+    Device  dw ?
+    Class   db ?
+    SubCls  db ?
+    ProgIF  db ?
+    IsPCIe  db ?     ; 0 = PCI, 1 = PCIe
+PCI_ENTRY ends
+
+MAX_PCI_ENTRY equ 256
+
+PCIList   PCI_ENTRY MAX_PCI_ENTRY dup(<>)
+PCICount  dw 0
+;CurPage   dw 0
+
+
+
+TargetVID       dw 0
+TargetDID       dw 0
+MidTmp          dw 0
 
 ; ---- readable NAME strings ----
 StrUnknown      db 'Unknown', '$'
@@ -45,39 +71,15 @@ StrNetwork      db 'Network', '$'
 StrUSB          db 'USB', '$'
 
 
-PSP             dw 0
 
-BDFMsg  db 10,13,"BDF = "
-BusBuf  db 2 dup(0),':'
-DevBuf  db 2 dup(0),'.'
-FunBuf  db 1 dup(0),' ','$'
+BDFMsg          db 10,13,"BDF = "
+BusBuf          db 2 dup(0),':'
+DevBuf          db 2 dup(0),'.'
+FunBuf          db 1 dup(0),' ','$'
 
-DevVenMsg db 10,13,"Device ID = "
-DeviceData db 4 dup(0),'h  Vendor ID = '
-VendorData db 4 dup(0),'h','$'
-
-
-BusUpbound         dw 255
-DevUpbound         dw 31
-FunUpbound         dw 7
-
-PCI_ENTRY struct
-    Bus     db ?
-    Dev     db ?
-    Fun     db ?
-    Vendor  dw ?
-    Device  dw ?
-    Class   db ?
-    SubCls  db ?
-    ProgIF  db ?
-    IsPCIe  db ?     ; 0 = PCI, 1 = PCIe
-PCI_ENTRY ends
-
-MAX_PCI_ENTRY equ 256
-
-PCIList   PCI_ENTRY MAX_PCI_ENTRY dup(<>)
-PCICount  dw 0
-CurPage   dw 0
+DevVenMsg       db 10,13,"Device ID = "
+DeviceData      db 4 dup(0),'h  Vendor ID = '
+VendorData      db 4 dup(0),'h','$'
 
 
 PrintBuf    db 64 dup('$')
