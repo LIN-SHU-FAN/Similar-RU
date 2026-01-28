@@ -7,10 +7,44 @@ include inc\Struct.inc
 
 .data
 
-Data1           db 31,0,31 dup(?)
-BusData         db 0
-DevData         db 0
-FunData         db 0
+DbHandle    dw 0FFFFh
+DbCount     dw 0
+
+DbStrBase   dd 0              ; DWORD !!!
+
+DbFilename  db 'PCIDB.BIN',0
+
+EntryBuf    db 8 dup(0)       ; VID(2) DID(2) OFF(4)
+TmpCh       db 0
+NameBuf     db 64 dup('$')
+
+TargetVID   dw 0
+TargetDID   dw 0
+MidTmp      dw 0
+
+
+; ---- readable NAME strings ----
+StrUnknown      db 'Unknown', '$'
+
+StrBridge       db 'Bridge', '$'
+StrHostBridge   db 'Host Bridge', '$'
+StrPCIBridge    db 'PCI Bridge', '$'
+
+StrStorage      db 'Storage', '$'
+StrSATA         db 'SATA', '$'
+StrNVMe         db 'NVMe', '$'
+StrIDE          db 'IDE', '$'
+StrRAID         db 'RAID', '$'
+
+StrDisplay      db 'Display', '$'
+StrVGA          db 'VGA', '$'
+Str3D           db '3D', '$'
+
+StrNetwork      db 'Network', '$'
+
+StrUSB          db 'USB', '$'
+
+
 PSP             dw 0
 
 BDFMsg  db 10,13,"BDF = "
@@ -46,6 +80,16 @@ PCICount  dw 0
 CurPage   dw 0
 
 
+PrintBuf    db 64 dup('$')
+
+StrPCI      db 'PCI ', '$'
+StrPCIe     db 'PCIe', '$'
+StrSpace    db ' ', '$'
+StrColon    db ':', '$'
+StrDot      db '.', '$'
+StrCRLF     db 13,10,'$'
+
+
 .stack
 .code
 
@@ -59,10 +103,66 @@ Testa proc far
         mov     ds, ax
         mov     PSP, es
 
+
+        call    InitPciDb
         call    BuildPCIList
+        call    PrintAllPCI
         
+
         ret
 Testa endp
+
+InitPciDb proc
+        mov     ah, 3Dh
+        mov     al, 00h
+        mov     dx, offset DbFilename
+        int     21h
+        jc      Fail
+        mov     DbHandle, ax
+
+        ; read 6-byte header -> NameBuf
+        mov     bx, DbHandle
+        mov     ah, 3Fh
+        mov     cx, 6
+        mov     dx, offset NameBuf
+        int     21h
+        cmp     ax, 6
+        jne     FailClose
+
+        cmp     byte ptr NameBuf+0, 'P'
+        jne     FailClose
+        cmp     byte ptr NameBuf+1, 'C'
+        jne     FailClose
+        cmp     byte ptr NameBuf+2, 'I'
+        jne     FailClose
+        cmp     byte ptr NameBuf+3, 'D'
+        jne     FailClose
+
+        mov     ax, word ptr NameBuf+4
+        mov     DbCount, ax
+
+        ; DbStrBase = 6 + DbCount*8
+        movzx   eax, DbCount
+        shl     eax, 3
+        add     eax, 6
+        mov     dword ptr DbStrBase, eax
+
+        clc
+        ret
+
+FailClose:
+        mov     bx, DbHandle
+        mov     ah, 3Eh
+        int     21h
+Fail:
+        mov     DbHandle, 0FFFFh
+        stc
+        ret
+InitPciDb endp
+
+
+
+
 ; ==================================================
 ; BuildPCIList
 ; - Scan PCI via CF8/CFC
@@ -305,6 +405,476 @@ StoreOneEntry endp
 
 
 
+HexNibbleToAscii proc
+        and     al, 0Fh
+        cmp     al, 9
+        jbe     Digit
+        add     al, 7
+Digit:
+        add     al, '0'
+        ret
+HexNibbleToAscii endp
+
+; AL = value, prints 2 hex chars
+PrintHex8 proc
+        push    ax
+        push    bx
+
+        mov     bl, al              ; backup original byte in BL
+
+        ; high nibble
+        mov     al, bl
+        shr     al, 4
+        call    HexNibbleToAscii
+        mov     dl, al
+        mov     ah, 02h
+        int     21h
+
+        ; low nibble
+        mov     al, bl
+        and     al, 0Fh
+        call    HexNibbleToAscii
+        mov     dl, al
+        mov     ah, 02h
+        int     21h
+
+        pop     bx
+        pop     ax
+        ret
+PrintHex8 endp
+
+
+; AX = value, prints 4 hex chars
+PrintHex16 proc
+        push    ax
+
+        mov     al, ah
+        call    PrintHex8
+        pop     ax
+        call    PrintHex8
+        ret
+PrintHex16 endp
+
+
+
+PrintAllPCI proc
+        xor     cx, cx              ; index = 0
+
+NextEntry:
+        cmp     cx, PCICount
+        jae     Done
+
+        mov     di, cx
+        imul    di, SIZE PCI_ENTRY
+        call    PrintOnePCIEntry
+
+        inc     cx
+        jmp     NextEntry
+
+Done:
+        ret
+PrintAllPCI endp
+
+; --------------------------------------------------
+; PrintOnePCIEntry
+; input: DI = offset of PCI_ENTRY
+; --------------------------------------------------
+PrintOnePCIEntry proc
+
+        ; ---- NAME（暫用 Class code）----
+        ; mov     al, PCIList[di].Class
+        ; call    PrintHex8
+
+        ; mov     dx, offset StrSpace
+        ; mov     ah, 09h
+        ; int     21h
+
+        ; ---- NAME (RU-like from DB) ----
+        mov     ax, PCIList[di].Vendor
+        mov     bx, PCIList[di].Device
+        call    LookupNameByVidDid
+        jnc     PrintNameOk
+
+        ; fallback: class-based
+        call    GetDeviceName          ; DX=string
+
+        mov     ah, 09h
+        int     21h
+        jmp     NameDone
+
+PrintNameOk:
+        mov     dx, offset NameBuf
+        mov     ah, 09h
+        int     21h
+
+        mov     dx, offset StrCRLF
+        mov     ah, 09h
+        int     21h
+        
+NameDone:
+
+        ; ---- PCI / PCIe ----
+        cmp     PCIList[di].IsPCIe, 1
+        jne     PrintPCI
+
+        mov     dx, offset StrPCIe
+        jmp     PrintBus
+
+PrintPCI:
+        mov     dx, offset StrPCI
+
+PrintBus:
+        mov     ah, 09h
+        int     21h
+
+        mov     dx, offset StrSpace
+        mov     ah, 09h
+        int     21h
+
+        ; ---- Vendor:Device ----
+        mov     ax, PCIList[di].Vendor
+        call    PrintHex16
+
+        mov     dx, offset StrColon
+        mov     ah, 09h
+        int     21h
+
+        mov     ax, PCIList[di].Device
+        call    PrintHex16
+
+        mov     dx, offset StrSpace
+        mov     ah, 09h
+        int     21h
+
+        ; ---- Bus:Dev.Fun ----
+        mov     al, PCIList[di].Bus
+        call    PrintHex8
+
+        mov     dx, offset StrColon
+        mov     ah, 09h
+        int     21h
+
+        mov     al, PCIList[di].Dev
+        call    PrintHex8
+
+        mov     dx, offset StrDot
+        mov     ah, 09h
+        int     21h
+
+        mov     al, PCIList[di].Fun
+        call    PrintHex8
+
+        ; ---- newline ----
+        mov     dx, offset StrCRLF
+        mov     ah, 09h
+        int     21h
+
+        ret
+PrintOnePCIEntry endp
+
+
+
+
+; input: EAX = absolute file offset
+SeekAbs32 proc
+        push    ax
+        push    bx
+        push    cx
+        push    dx
+
+        mov     dx, ax          ; low16
+        shr     eax, 16
+        mov     cx, ax          ; high16
+
+        mov     bx, DbHandle
+        mov     ah, 42h
+        mov     al, 00h
+        int     21h
+
+        pop     dx
+        pop     cx
+        pop     bx
+        pop     ax
+        ret
+SeekAbs32 endp
+
+
+
+; input: AX=Vendor, BX=Device
+; output: CF=0 found (NameBuf ready), CF=1 not found
+; input: AX=Vendor, BX=Device
+; output: CF=0 found (NameBuf ready), CF=1 not found
+LookupNameByVidDid proc
+        push    ax
+        push    bx
+        push    cx
+        push    dx
+        push    si
+        push    di
+        push    bp
+
+        cmp     DbHandle, 0FFFFh
+        je      NotFound
+
+        ; store targets in memory (avoid reg clobber)
+        mov     TargetVID, ax
+        mov     TargetDID, bx
+
+        xor     si, si
+        mov     di, DbCount
+        dec     di
+        js      NotFound
+
+BS_Loop:
+        cmp     si, di
+        ja      NotFound
+
+        ; mid = (low+high)/2
+        mov     cx, si
+        add     cx, di
+        shr     cx, 1
+        mov     MidTmp, cx
+
+        ; entry_offset = 6 + mid*8
+        movzx   eax, cx
+        shl     eax, 3
+        add     eax, 6
+        call    SeekAbs32
+
+        ; read entry 8 bytes -> EntryBuf
+        mov     bx, DbHandle
+        mov     ah, 3Fh
+        mov     cx, 8
+        mov     dx, offset EntryBuf
+        int     21h
+        cmp     ax, 8
+        jne     NotFound
+
+        ; compare VID
+        mov     ax, word ptr EntryBuf+0
+        mov     bp, TargetVID
+        cmp     bp, ax
+        jb      GoLeft
+        ja      GoRight
+
+        ; compare DID
+        mov     ax, word ptr EntryBuf+2
+        mov     bp, TargetDID
+        cmp     bp, ax
+        jb      GoLeft
+        ja      GoRight
+
+        ; FOUND: abs = DbStrBase + NameOff(dword)
+        mov     eax, dword ptr EntryBuf+4
+        add     eax, dword ptr DbStrBase
+        call    SeekAbs32
+
+        call    DbReadCStringToNameBuf
+        clc
+        jmp     Done
+
+GoLeft:
+        mov     cx, MidTmp
+        mov     di, cx
+        dec     di
+        jmp     BS_Loop
+
+GoRight:
+        mov     cx, MidTmp
+        mov     si, cx
+        inc     si
+        jmp     BS_Loop
+
+NotFound:
+        stc
+Done:
+        pop     bp
+        pop     di
+        pop     si
+        pop     dx
+        pop     cx
+        pop     bx
+        pop     ax
+        ret
+LookupNameByVidDid endp
+
+
+
+
+DbReadCStringToNameBuf proc
+        push    ax
+        push    bx
+        push    cx
+        push    dx
+        push    si
+
+        mov     si, offset NameBuf
+        mov     cx, 63               ; remaining chars
+
+ReadLoop:
+        ; read 1 byte -> TmpCh
+        mov     bx, DbHandle
+        mov     ah, 3Fh
+        mov     dx, offset TmpCh
+        push    cx                   ; keep remaining
+        mov     cx, 1
+        int     21h
+        pop     cx
+        cmp     ax, 1
+        jne     Terminate
+
+        mov     al, TmpCh
+        cmp     al, 0
+        je      Terminate
+
+        mov     [si], al
+        inc     si
+        loop    ReadLoop
+
+Terminate:
+        mov     byte ptr [si], '$'
+
+        pop     si
+        pop     dx
+        pop     cx
+        pop     bx
+        pop     ax
+        ret
+DbReadCStringToNameBuf endp
+
+
+
+
+
+; --------------------------------------------------
+; GetDeviceName
+; input : DI = offset of PCI_ENTRY in PCIList
+; output: DX = offset of $-terminated NAME string
+; --------------------------------------------------
+GetDeviceName proc
+        ; default
+        mov     dx, offset StrUnknown
+
+        mov     al, PCIList[di].Class
+        mov     ah, PCIList[di].SubCls
+        mov     bl, PCIList[di].ProgIF
+
+        ; -------------------------------
+        ; Class 06h = Bridge
+        ; -------------------------------
+        cmp     al, 06h
+        jne     CheckStorage
+
+        ; SubCls 00h = Host bridge
+        cmp     ah, 00h
+        jne     BridgeOther
+        mov     dx, offset StrHostBridge
+        ret
+
+BridgeOther:
+        ; SubCls 04h = PCI-to-PCI bridge
+        cmp     ah, 04h
+        jne     BridgeGeneric
+        mov     dx, offset StrPCIBridge
+        ret
+
+BridgeGeneric:
+        mov     dx, offset StrBridge
+        ret
+
+
+CheckStorage:
+        ; -------------------------------
+        ; Class 01h = Mass Storage
+        ; -------------------------------
+        cmp     al, 01h
+        jne     CheckDisplay
+
+        ; SubCls 06h = SATA
+        cmp     ah, 06h
+        jne     StorageOther
+        mov     dx, offset StrSATA
+        ret
+
+StorageOther:
+        ; SubCls 08h = NVM (NVMe 常見在這類，ProgIF=02h)
+        cmp     ah, 08h
+        jne     StorageIDE
+        ; 若你想更精準：ProgIF=02h => NVMe
+        cmp     bl, 02h
+        jne     StorageGeneric
+        mov     dx, offset StrNVMe
+        ret
+
+StorageIDE:
+        ; SubCls 01h = IDE
+        cmp     ah, 01h
+        jne     StorageRAID
+        mov     dx, offset StrIDE
+        ret
+
+StorageRAID:
+        ; SubCls 04h = RAID
+        cmp     ah, 04h
+        jne     StorageGeneric
+        mov     dx, offset StrRAID
+        ret
+
+StorageGeneric:
+        mov     dx, offset StrStorage
+        ret
+
+
+CheckDisplay:
+        ; -------------------------------
+        ; Class 03h = Display controller
+        ; -------------------------------
+        cmp     al, 03h
+        jne     CheckNetwork
+
+        ; SubCls 00h = VGA compatible controller
+        cmp     ah, 00h
+        jne     Display3D
+        mov     dx, offset StrVGA
+        ret
+
+Display3D:
+        ; SubCls 02h = 3D controller
+        cmp     ah, 02h
+        jne     DisplayGeneric
+        mov     dx, offset Str3D
+        ret
+
+DisplayGeneric:
+        mov     dx, offset StrDisplay
+        ret
+
+
+CheckNetwork:
+        ; -------------------------------
+        ; Class 02h = Network controller
+        ; -------------------------------
+        cmp     al, 02h
+        jne     CheckUSB
+        mov     dx, offset StrNetwork
+        ret
+
+
+CheckUSB:
+        ; -------------------------------
+        ; Class 0Ch = Serial Bus
+        ; SubCls 03h = USB controller
+        ; -------------------------------
+        cmp     al, 0Ch
+        jne     Done
+        cmp     ah, 03h
+        jne     Done
+        mov     dx, offset StrUSB
+        ret
+
+Done:
+        ret
+GetDeviceName endp
 
 
 end Testa
