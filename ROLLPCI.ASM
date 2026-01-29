@@ -46,8 +46,11 @@ PCICount  dw 0
 
 
 CurPage   dw 0
+CurRow    dw 0
 
 PAGE_SIZE   equ 10
+
+CurAttr db 07h     ; 07=黑底白字, 1F=藍底白字...你想換就改這個
 
 StrPage     db 'Page ', '$'
 StrSlash    db '/', '$'
@@ -101,6 +104,10 @@ StrDot      db '.', '$'
 StrCRLF     db 13,10,'$'
 
 
+StrCfgTitle  db 'PCI Configuration Space (256B)', '$'
+StrEscHint   db 'ESC to back', '$'
+
+
 .stack
 .code
 
@@ -117,6 +124,8 @@ Testa proc far
 
         call    InitPciDb
         call    BuildPCIList
+        
+        
         call    PageLoop
         
 
@@ -477,14 +486,63 @@ PrintHex16 endp
 ; Print one char in AL using BIOS teletype
 ; Uses: AH=0Eh, BH=page(0), BL=attr(07h)
 BiosPutChar proc
-        push    ax
-        push    bx
-        mov     ah, 0Eh
-        mov     bh, 0
-        mov     bl, 07h
-        int     10h
-        pop     bx
-        pop     ax
+        push ax
+        push bx
+        push cx
+        push dx
+
+        ; CR or LF 直接交給 teletype（負責換行/滾屏/游標）
+        cmp  al, 0Dh
+        je   @@TTY
+        cmp  al, 0Ah
+        je   @@TTY
+
+        ; 1) 讀目前游標位置
+        mov  ah, 03h
+        mov  bh, 0
+        int  10h            ; DH=row, DL=col
+
+        ; 2) 在游標位置寫「字元+屬性」
+        mov  ah, 09h
+        mov  bh, 0
+        mov  bl, CurAttr
+        mov  cx, 1
+        int  10h
+
+        ; 3) 手動游標 +1（簡化：80x25）
+        inc  dl
+        cmp  dl, 80
+        jb   @@SetCur
+        xor  dl, dl
+        inc  dh
+
+        ; 超過第 24 列就滾一行（row=24 為最後一行）
+        cmp  dh, 25
+        jb   @@SetCur
+        mov  ax, 0601h      ; scroll up 1 line
+        mov  bh, CurAttr
+        mov  cx, 0000h
+        mov  dx, 184Fh
+        int  10h
+        mov  dh, 24
+        mov  dl, 0
+
+@@SetCur:
+        mov  ah, 02h
+        mov  bh, 0
+        int  10h
+        jmp  @@Done
+
+@@TTY:
+        mov  ah, 0Eh
+        mov  bh, 0
+        int  10h
+
+@@Done:
+        pop  dx
+        pop  cx
+        pop  bx
+        pop  ax
         ret
 BiosPutChar endp
 
@@ -789,12 +847,6 @@ LookupNameByVidDid endp
 
 
 
-
-
-
-
-
-
 ; --------------------------------------------------
 ; GetDeviceName
 ; input : DI = offset of PCI_ENTRY in PCIList
@@ -967,8 +1019,15 @@ NextLine:
         mul     bx              ; AX = idx*size
         mov     di, ax
 
+        ; if (cx == CurRow) CurAttr=1Fh else CurAttr=07h
+        mov     CurAttr, 07h
+        cmp     cx,CurRow
+        jne     Ptpci
+        mov     CurAttr, 1Fh
+Ptpci:
         call    PrintOnePCIEntry
 
+        mov     CurAttr, 07h
         inc     cx
         jmp     NextLine
 
@@ -994,6 +1053,48 @@ PrintPage endp
 
 
 
+; --------------------------------------------
+; GetLastRowOnPage
+; out: AX = LastRow (0..PAGE_SIZE-1, 依本頁實際筆數)
+; uses: BX, DX
+; --------------------------------------------
+GetLastRowOnPage proc
+        push bx
+        push dx
+
+        ; start = CurPage * PAGE_SIZE
+        mov     ax, CurPage
+        mov     bx, PAGE_SIZE
+        mul     bx              ; DX:AX = start
+        ; AX = start
+
+        ; if start >= PCICount => LastRow = 0
+        cmp     ax, PCICount
+        jae     @@Zero
+
+        ; remain = PCICount - start
+        mov     dx, PCICount
+        sub     dx, ax          ; DX = remain (1..)
+
+        ; rows = min(remain, PAGE_SIZE)
+        mov     ax, dx          ; AX = remain
+        cmp     ax, PAGE_SIZE
+        jbe     @@RowsOK
+        mov     ax, PAGE_SIZE
+@@RowsOK:
+        ; LastRow = rows - 1
+        dec     ax
+        jmp     @@Done
+
+@@Zero:
+        xor     ax, ax          ; LastRow = 0
+
+@@Done:
+        pop     dx
+        pop     bx
+        ret
+GetLastRowOnPage endp
+
 
 
 ; --------------------------------------------
@@ -1007,8 +1108,10 @@ PageLoop proc
         push dx
 
         mov CurPage, 0
-
+        mov CurRow, 0
+        
 Show:
+        
         call PrintPage
 
 KeyWait:
@@ -1026,15 +1129,23 @@ KeyWait:
         cmp ah, 51h            ; PageDown
         je  DoPgDn
 
+        ;row up or down
+        cmp ah, 48h            ; up
+        je  DoUp
+        cmp ah, 50h            ; Down
+        je  DoDown
+
         jmp KeyWait
 
 DoPgUp:
+        mov CurRow, 0
         cmp CurPage, 0
         je  Show
         dec CurPage
         jmp Show
 
 DoPgDn:
+        mov CurRow, 0
         ; maxPage = (PCICount-1) / PAGE_SIZE
         mov ax, PCICount
         cmp ax, 0
@@ -1048,7 +1159,17 @@ DoPgDn:
         jae Show
         inc CurPage
         jmp Show
-
+DoUp:
+        cmp CurRow, 0
+        je  Show
+        dec CurRow
+        jmp Show
+DoDown:
+        call    GetLastRowOnPage    ; AX=LastRow
+        cmp     CurRow, ax
+        jae     Show                ; CurRow >= LastRow → 不動
+        inc     CurRow
+        jmp     Show
 Exit:
         pop dx
         pop bx
