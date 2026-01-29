@@ -1097,6 +1097,190 @@ GetLastRowOnPage endp
 
 
 
+
+
+
+
+
+
+
+
+; ==================================================
+; ReadConfigByte
+; input : BX=Bus, CX=Dev, SI=Fun, AL=byte offset (0..FF)
+; output: AL = byte value
+; ==================================================
+ReadConfigByte proc
+        push    bx
+        push    cx
+        push    dx
+
+        mov     dl, al          ; DL = original byte offset (0..FF)
+        and     al, 0FCh        ; dword-aligned offset
+
+        push    dx              ; ★保存 original offset（因為 ReadConfigDword 會改 EDX/DL）
+        call    ReadConfigDword ; EAX = dword
+        pop     dx              ; ★取回原本的 DL
+
+        mov     cl, dl
+        and     cl, 3
+        shl     cl, 3           ; shift = (offset&3)*8
+        shr     eax, cl         ; target byte -> AL
+
+        pop     dx
+        pop     cx
+        pop     bx
+        ret
+ReadConfigByte endp
+
+
+; input: AL = 0..0F
+PrintHex1 proc
+        push    ax
+        call    HexNibbleToAscii
+        call    BiosPutChar
+        pop     ax
+        ret
+PrintHex1 endp
+
+
+
+; ==================================================
+; ShowConfigSpace
+; - uses CurPage, CurRow, PCIList, PCICount
+; - show 16x16 bytes (00..FF)
+; - ESC to return
+; ==================================================
+ShowConfigSpace proc
+        push    ax
+        push    bx
+        push    cx
+        push    dx
+        push    si
+        push    di
+        push    bp
+
+        ; idx = CurPage*PAGE_SIZE + CurRow
+        mov     ax, CurPage
+        mov     bx, PAGE_SIZE
+        mul     bx              ; AX = CurPage*PAGE_SIZE
+        add     ax, CurRow      ; AX = idx
+
+        ; if idx >= PCICount -> return
+        cmp     ax, PCICount
+        jae     @@Back
+
+        ; DI = idx * SIZE PCI_ENTRY
+        mov     bx, SIZE PCI_ENTRY
+        mul     bx
+        mov     di, ax
+
+        ; load BDF into regs expected by ReadConfigDword/Byte
+        movzx   bx, byte ptr PCIList[di].Bus
+        movzx   cx, byte ptr PCIList[di].Dev
+        movzx   si, byte ptr PCIList[di].Fun
+
+        call    ClearScreen
+
+        ; Title
+        mov     dx, offset StrCfgTitle
+        call    BiosPrintStringDollar
+        mov     dx, offset StrCRLF
+        call    BiosPrintStringDollar
+
+        ; Header row: "  " + 0..F
+        ; 印兩格空白（讓上方欄位對齊左側 row header + 空白）
+        mov     al, ' '
+        call    BiosPutChar
+        call    BiosPutChar
+
+        mov     di, 0
+@@HdrCol:
+        cmp     di, 16
+        jae     @@HdrDone
+        mov     al, ' '
+        call    BiosPutChar
+        mov     al, dl          ; (不用) 先清
+        mov     ax, di
+        mov     al, al          ; AL = di (low)
+        call    PrintHex1       ; 印 0..F
+        mov     al, ' '
+        call    BiosPutChar
+        inc     di
+        jmp     @@HdrCol
+@@HdrDone:
+        mov     dx, offset StrCRLF
+        call    BiosPrintStringDollar
+
+        ; 16 rows
+        mov     bp, 0           ; row = 0..15
+@@RowLoop:
+        cmp     bp, 16
+        jae     @@Footer
+
+        ; left header: row digit (0..F) + space
+        mov     ax, bp
+        mov     al, al
+        call    PrintHex1
+        mov     al, ' '
+        call    BiosPutChar
+
+        ; 16 cols
+        mov     di, 0           ; col = 0..15
+@@ColLoop:
+        cmp     di, 16
+        jae     @@RowEnd
+
+        ; offset = row*16 + col
+        mov     ax, bp
+        shl     ax, 4           ; row*16
+        add     ax, di
+        mov     al, al          ; AL = offset
+
+        call    ReadConfigByte  ; AL = byte
+        call    PrintHex8       ; prints 2 hex chars
+
+        mov     al, ' '
+        call    BiosPutChar
+
+        inc     di
+        jmp     @@ColLoop
+
+@@RowEnd:
+        mov     dx, offset StrCRLF
+        call    BiosPrintStringDollar
+        inc     bp
+        jmp     @@RowLoop
+
+@@Footer:
+        mov     dx, offset StrCRLF
+        call    BiosPrintStringDollar
+        mov     dx, offset StrEscHint
+        call    BiosPrintStringDollar
+        mov     dx, offset StrCRLF
+        call    BiosPrintStringDollar
+
+        ; wait ESC
+@@WaitEsc:
+        call    GetKeyBIOS
+        cmp     al, 1Bh         ; ESC
+        jne     @@WaitEsc
+
+@@Back:
+        pop     bp
+        pop     di
+        pop     si
+        pop     dx
+        pop     cx
+        pop     bx
+        pop     ax
+        ret
+ShowConfigSpace endp
+
+
+
+
+
 ; --------------------------------------------
 ; PageLoop
 ; PgUp/PgDn change CurPage
@@ -1135,6 +1319,9 @@ KeyWait:
         cmp ah, 50h            ; Down
         je  DoDown
 
+        cmp     al, 0Dh
+        je      DoEnter
+
         jmp KeyWait
 
 DoPgUp:
@@ -1169,6 +1356,10 @@ DoDown:
         cmp     CurRow, ax
         jae     Show                ; CurRow >= LastRow → 不動
         inc     CurRow
+        jmp     Show
+
+DoEnter:
+        call    ShowConfigSpace
         jmp     Show
 Exit:
         pop dx
