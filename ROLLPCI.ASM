@@ -3,7 +3,7 @@ include inc\File.inc
 include inc\Struct.inc
 
 .model small
-.586
+.586p
 
 .data
 
@@ -108,8 +108,12 @@ StrCfgTitle  db 'PCI Configuration Space (256B)', '$'
 StrEscHint   db 'ESC to back', '$'
 
 
+
 .stack
 .code
+
+
+EXTERN  SetRealModeLimit(EmptyRoutine):FAR
 
 ;--------------------------------------------------
 Testa proc far
@@ -121,6 +125,11 @@ Testa proc far
         mov     ds, ax
         mov     PSP, es
 
+        xor     ax, ax
+        mov     es, ax
+        mov     al, 1
+        call    SetRealModeLimit
+
 
         call    InitPciDb
         call    BuildPCIList
@@ -128,9 +137,16 @@ Testa proc far
         
         call    PageLoop
         
-
+        xor     al, al
+        call    SetRealModeLimit
         ret
 Testa endp
+
+
+EmptyRoutine    proc FAR
+        ret
+EmptyRoutine    endp
+
 
 InitPciDb proc
         mov     ah, 3Dh
@@ -433,7 +449,8 @@ BuildPCIList endp
 
 
 
-
+;intput AL = hex num 
+;output Al = ASCII
 HexNibbleToAscii proc
         and     al, 0Fh
         cmp     al, 9
