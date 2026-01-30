@@ -3,12 +3,17 @@ include inc\File.inc
 include inc\Struct.inc
 
 .model small
-.586p
+.586
 
 .data
 
 PSP             dw 0
 
+EcamBase        dd 0
+EcamStartBus    db 0
+EcamEndBus      db 0
+
+RsdpSig db 'RSD PTR '
 
 DbHandle        dw 0FFFFh
 DbCount         dw 0
@@ -50,7 +55,7 @@ CurRow    dw 0
 
 PAGE_SIZE   equ 10
 
-CurAttr db 07h     ; 07=黑底白字, 1F=藍底白字...你想換就改這個
+CurAttr db 07h     
 
 StrPage     db 'Page ', '$'
 StrSlash    db '/', '$'
@@ -128,7 +133,9 @@ Testa proc far
         xor     ax, ax
         mov     es, ax
         mov     al, 1
-        call    SetRealModeLimit
+        call    SetRealModeLimit ;es set -> big real mode
+
+        call    GetEcamBase 
 
 
         call    InitPciDb
@@ -137,6 +144,7 @@ Testa proc far
         
         call    PageLoop
         
+
         xor     al, al
         call    SetRealModeLimit
         ret
@@ -146,6 +154,279 @@ Testa endp
 EmptyRoutine    proc FAR
         ret
 EmptyRoutine    endp
+
+; SumCheck: AL = (sum of [EDI..EDI+ECX-1]) mod 256
+; return ZF=1 if sum==0
+SumCheck proc
+    push edi
+    push ecx
+    xor eax, eax
+@@L:
+    test ecx, ecx
+    jz   @@Done
+    add  al, byte ptr es:[edi]
+    inc  edi
+    dec  ecx
+    jmp  @@L
+@@Done:
+    pop ecx
+    pop edi
+    test al, al
+    ret
+SumCheck endp
+
+; safer byte-compare "RSD PTR "
+IsRSDP8 proc
+    push esi
+    lea  esi, RsdpSig
+    mov  ecx, 8
+@@C:
+    mov al, byte ptr es:[edi]
+    cmp al, byte ptr cs:[esi]
+    jne @@Fail
+    inc edi
+    inc esi
+    loop @@C
+    xor ax, ax      ; ZF=1 trick? not needed
+    pop esi
+    ; indicate match by setting ZF=1 via cmp reg,reg
+    xor ax, ax
+    cmp ax, ax
+    ret
+@@Fail:
+    pop esi
+    or  ax, 1
+    cmp ax, 0       ; ZF=0
+    ret
+IsRSDP8 endp
+
+; Get EBDA base phys addr in EDI
+GetEbdaBase proc
+    ; EBDA segment stored at phys 0x40E
+    mov edi, 040Eh
+    mov ax, word ptr es:[edi]
+    movzx edi, ax
+    shl edi, 4
+    ret
+GetEbdaBase endp
+
+; FindRSDP: return EDI = RSDP phys addr, CF=0 if found else CF=1
+FindRSDP proc
+    push ebx
+
+    ; 1) scan EBDA first 1KB
+    call GetEbdaBase
+    mov ebx, edi            ; start
+    add ebx, 400h           ; end = start+1KB
+@@ScanEbda:
+    cmp edi, ebx
+    jae @@ScanHi
+    push edi
+    call IsRSDP8
+    pop edi
+    jnz @@Next16
+    ; checksum first 20 bytes
+    push edi
+    mov ecx, 20
+    call SumCheck
+    pop edi
+    jnz @@Next16            ; sum!=0
+    clc
+    pop ebx
+    ret
+@@Next16:
+    add edi, 10h
+    jmp @@ScanEbda
+
+@@ScanHi:
+    mov edi, 0E0000h
+@@ScanHiLoop:
+    cmp edi, 100000h
+    jae @@NotFound
+    push edi
+    call IsRSDP8
+    pop edi
+    jnz @@Next16Hi
+    push edi
+    mov ecx, 20
+    call SumCheck
+    pop edi
+    jnz @@Next16Hi
+    clc
+    pop ebx
+    ret
+@@Next16Hi:
+    add edi, 10h
+    jmp @@ScanHiLoop
+
+@@NotFound:
+    stc
+    pop ebx
+    ret
+FindRSDP endp
+
+; GetEcamBase: sets EcamBase/EcamStartBus/EcamEndBus, CF=0 success
+GetEcamBase proc
+    push ebx
+    push esi
+
+    call FindRSDP
+    jc   @@Fail
+
+    ; EDI = RSDP
+    mov al, byte ptr es:[edi+15]     ; Revision
+    cmp al, 2
+    jb  @@UseRSDT
+
+    ; try XSDT if within 4GB and extended checksum ok
+    mov eax, dword ptr es:[edi+20]   ; Length
+    push edi
+    mov ecx, eax
+    call SumCheck                    ; extended checksum
+    pop edi
+    jnz @@UseRSDT
+
+    ; XSDT address at +24 (QWORD)
+    mov eax, dword ptr es:[edi+24]   ; low
+    mov edx, dword ptr es:[edi+28]   ; high
+    test edx, edx
+    jnz @@UseRSDT                    ; >4GB ignore
+    mov edi, eax
+    jmp @@ParseXSDT
+
+@@UseRSDT:
+    mov eax, dword ptr es:[edi+16]   ; RSDT addr
+    mov edi, eax
+    jmp @@ParseRSDT
+
+@@ParseRSDT:
+    ; verify table checksum using Length
+    mov eax, dword ptr es:[edi+4]    ; Length
+    push edi
+    mov ecx, eax
+    call SumCheck
+    pop edi
+    jnz @@Fail
+
+    ; count = (Length-36)/4
+    mov eax, dword ptr es:[edi+4]
+    sub eax, 36
+    shr eax, 2
+    mov ebx, eax                     ; count
+    lea esi, [edi+36]                ; entry ptr
+@@RLoop:
+    test ebx, ebx
+    jz @@Fail
+    mov eax, dword ptr es:[esi]      ; table addr
+    push edi
+    mov edi, eax
+    ; signature "MCFG" ?
+    cmp dword ptr es:[edi], 'GFMC'   ; little-endian
+    pop edi
+    je  @@FoundMCFG_R
+    add esi, 4
+    dec ebx
+    jmp @@RLoop
+
+@@FoundMCFG_R:
+    ; EAX still table addr in previous load? reload safely
+    mov eax, dword ptr es:[esi]
+    mov edi, eax
+    jmp @@ParseMCFG
+
+@@ParseXSDT:
+    mov eax, dword ptr es:[edi+4]    ; Length
+    push edi
+    mov ecx, eax
+    call SumCheck
+    pop edi
+    jnz @@Fail
+
+    ; count = (Length-36)/8
+    mov eax, dword ptr es:[edi+4]
+    sub eax, 36
+    shr eax, 3
+    mov ebx, eax
+    lea esi, [edi+36]
+@@XLoop:
+    test ebx, ebx
+    jz @@Fail
+    mov eax, dword ptr es:[esi]      ; low 32
+    mov edx, dword ptr es:[esi+4]    ; high 32
+    test edx, edx
+    jnz @@NextX
+    push edi
+    mov edi, eax
+    cmp dword ptr es:[edi], 'GFMC'
+    pop edi
+    je  @@FoundMCFG_X
+@@NextX:
+    add esi, 8
+    dec ebx
+    jmp @@XLoop
+
+@@FoundMCFG_X:
+    mov eax, dword ptr es:[esi]
+    mov edi, eax
+
+@@ParseMCFG:
+    ; verify MCFG checksum
+    mov eax, dword ptr es:[edi+4]    ; Length
+    push edi
+    mov ecx, eax
+    call SumCheck
+    pop edi
+    jnz @@Fail
+
+    ; allocations start at edi+44, each 16 bytes
+    ;count = (Length - 44) / 16
+    mov eax, dword ptr es:[edi+4]
+    sub eax, 44
+    xor edx, edx
+    mov ecx, 16
+    div ecx
+    mov ebx, eax          ; count
+
+    lea esi, [edi+44]
+@@ALoop:
+    test ebx, ebx
+    jz @@Fail
+
+    ; BaseAddress QWORD at [esi]
+    mov eax, dword ptr es:[esi]      ; base low
+    mov edx, dword ptr es:[esi+4]    ; base high
+    test edx, edx
+    jnz @@NextA                       ; >4GB skip
+
+    ; SegmentGroup at [esi+8]
+    mov cx, word ptr es:[esi+8]
+    cmp cx, 0
+    jne @@NextA
+
+    ; StartBus/EndBus
+    mov dl, byte ptr es:[esi+10]
+    mov dh, byte ptr es:[esi+11]
+
+    ; pick this one
+    mov dword ptr EcamBase, eax
+    mov EcamStartBus, dl
+    mov EcamEndBus, dh
+    clc
+    pop esi
+    pop ebx
+    ret
+
+@@NextA:
+    add esi, 16
+    dec ebx
+    jmp @@ALoop
+
+@@Fail:
+    stc
+    pop esi
+    pop ebx
+    ret
+GetEcamBase endp
 
 
 InitPciDb proc
