@@ -12,6 +12,8 @@ PSP             dw 0
 EcamBase        dd 0
 EcamStartBus    db 0
 EcamEndBus      db 0
+Ecamfail        db 'MCFG not found', '$'
+
 
 RsdpSig db 'RSD PTR '
 
@@ -136,15 +138,36 @@ Testa proc far
         call    SetRealModeLimit ;es set -> big real mode
 
         call    GetEcamBase 
+        jc      McfgFail
 
+        mov     eax, EcamBase
+        call    PrintHex32
 
-        call    InitPciDb
-        call    BuildPCIList
+        mov     dx , offset StrCRLF
+        call    BiosPrintStringDollar
+
+        mov     al, EcamStartBus
+        call    PrintHex8
+
+        mov     dx , offset StrCRLF
+        call    BiosPrintStringDollar
+
+        mov     al, EcamEndBus
+        call    PrintHex8
+
+        mov     dx , offset StrCRLF
+        call    BiosPrintStringDollar
+
+        ; call    InitPciDb
+        ; call    BuildPCIList
         
         
-        call    PageLoop
-        
-
+        ; call    PageLoop
+        jmp     ExitP
+McfgFail:
+        ;mov     dx , offset Ecamfail
+        call    BiosPrintStringDollar
+ExitP:
         xor     al, al
         call    SetRealModeLimit
         ret
@@ -778,6 +801,24 @@ PrintHex16 proc
         call    PrintHex8
         ret
 PrintHex16 endp
+
+; EAX = value, prints 8 hex chars using BIOS
+PrintHex32 proc
+        push    ax
+        push    dx
+
+        ; 先把 EAX 備份到 DX:AX (low16 in AX, high16 in DX)
+        mov     dx, ax          ; DX = low16
+        shr     eax, 16         ; AX = high16 (因為 shift 後低16就是原本高16)
+        call    PrintHex16      ; 印 high16 (4 hex)
+
+        mov     ax, dx          ; 還原 low16
+        call    PrintHex16      ; 印 low16 (4 hex)
+
+        pop     dx
+        pop     ax
+        ret
+PrintHex32 endp
 
 
 
