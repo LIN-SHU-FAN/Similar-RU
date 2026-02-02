@@ -121,7 +121,11 @@ StrCRLF     db 13,10,'$'
 
 
 StrCfgTitle  db 'PCI Configuration Space (256B)', '$'
+StrPCIECfgTitle  db 'PCIe Configuration Space (4096B)', '$'
 StrEscHint   db 'ESC to back', '$'
+StrPCIERollHint   db 'PgUp/PgDn to scroll', '$'
+
+CurPCIEPage  db 0
 
 
 
@@ -1549,6 +1553,32 @@ PrintHex1 proc
 PrintHex1 endp
 
 
+; if it's PCI zf = 1
+PCIorPCIE proc
+        push    ax
+        push    bx
+        push    di
+
+        ; idx = CurPage*PAGE_SIZE + CurRow
+        mov     ax, CurPage
+        mov     bx, PAGE_SIZE
+        mul     bx              ; AX = CurPage*PAGE_SIZE
+        add     ax, CurRow      ; AX = idx
+
+        ; di = idx
+        mov     di, ax
+        imul    di, SIZE PCI_ENTRY
+
+        ; ZF=1 => IsPCIe==0 => PCI
+        mov     al, PCIList[di].IsPCIe
+        test    al, al
+
+        pop     di
+        pop     bx
+        pop     ax
+        ret
+PCIorPCIE endp
+
 
 ; ==================================================
 ; ShowConfigSpace
@@ -1683,8 +1713,228 @@ ShowConfigSpace proc
 ShowConfigSpace endp
 
 
+;input eax = offset , BDF->bx ,cx ,si
+;output eax = 32bit(dword) Config space
+ReadPCIEConfig proc
+        movzx   edx,bx
+        shl     edx,20
+        add     eax,edx ;bus
+
+        movzx   edx,cx
+        shl     edx,15
+        add     eax,edx ;dev
+
+        movzx   edx,si
+        shl     edx,12
+        add     eax,edx ;fun
+
+        mov     eax, dword ptr es:[eax]  ; 讀 offset 0 的 DWORD
+
+        ret
+ReadPCIEConfig endp
 
 
+;intput eax = 32bit PCIE config space
+Print4PCIEConfig proc
+        push    edx
+        mov     edx,eax ;edx = PCIE config space
+
+        call    PrintHex8      ;print al 
+        mov     al, ' '
+        call    BiosPutChar
+
+        mov     al , ah         
+        call    PrintHex8      ;print al 
+        mov     al, ' '
+        call    BiosPutChar
+
+
+        shr     eax,16
+        call    PrintHex8      ;print al  
+        mov     al, ' '
+        call    BiosPutChar
+
+        mov     al , ah 
+        call    PrintHex8      ;print al 
+        mov     al, ' '
+        call    BiosPutChar
+
+
+        mov     eax , edx
+        pop     edx
+        ret
+Print4PCIEConfig endp
+
+ShowPCIEConfigSpace proc
+        push    ax
+        push    bx
+        push    cx
+        push    dx
+        push    si
+        push    edi
+        push    bp
+
+        ; idx = CurPage*PAGE_SIZE + CurRow
+        mov     ax, CurPage
+        mov     bx, PAGE_SIZE
+        mul     bx              ; AX = CurPage*PAGE_SIZE
+        add     ax, CurRow      ; AX = idx
+
+        ; if idx >= PCICount -> return
+        cmp     ax, PCICount
+        jae     @@Back
+
+        ; DI = idx * SIZE PCI_ENTRY
+        mov     bx, SIZE PCI_ENTRY
+        mul     bx
+        mov     di, ax
+
+        ; load BDF into regs expected by ReadConfigDword/Byte
+        movzx   bx, byte ptr PCIList[di].Bus
+        movzx   cx, byte ptr PCIList[di].Dev
+        movzx   si, byte ptr PCIList[di].Fun
+
+        mov     CurPCIEPage,0
+@@PrintScreen:
+        call    ClearScreen
+
+        ; Title
+        mov     dx, offset StrPCIECfgTitle
+        call    BiosPrintStringDollar
+        mov     dx, offset StrCRLF
+        call    BiosPrintStringDollar
+
+        ; Header row: "  " + 0..F
+        ; 印三格空白（讓上方欄位對齊左側 row header + 空白）
+        mov     al, ' '
+        call    BiosPutChar
+        call    BiosPutChar
+        call    BiosPutChar
+
+        mov     di, 0
+@@HdrCol:
+        cmp     di, 16
+        jae     @@HdrDone
+        mov     al, ' '
+        call    BiosPutChar
+        mov     al, dl          ; (不用) 先清
+        mov     ax, di
+        mov     al, al          ; AL = di (low)
+        call    PrintHex1       ; 印 0..F
+        mov     al, ' '
+        call    BiosPutChar
+        inc     di
+        jmp     @@HdrCol
+@@HdrDone:
+        mov     dx, offset StrCRLF
+        call    BiosPrintStringDollar
+
+        ; 16 rows
+        mov     bp, 0           ; bp->row = 0..15
+@@RowLoop:
+        cmp     bp, 16
+        jae     @@Footer
+
+        ; left header: row digit (0..F) + space
+
+        ;page 
+        movzx     ax, CurPCIEPage
+        mov     al, al
+        call    PrintHex1
+        mov     al, ' '
+        call    BiosPutChar
+
+        ; row
+        mov     ax, bp
+        mov     al, al
+        call    PrintHex1
+        mov     al, ' '
+        call    BiosPutChar
+
+        ; 16 cols
+        mov     edi, 0           ; col = 0..15
+@@ColLoop:
+        cmp     edi, 16          ;di -> col
+        jae     @@RowEnd
+
+        ; offset = page*256 + row*16 + col
+        movzx   eax,CurPCIEPage
+        shl     eax, 8           ; page*256
+
+        movzx   edx,bp
+        shl     edx, 4           ; row*16
+        add     eax, edx
+
+        add     eax,edi          ;eax = ECAM offset(0~11bit)
+
+
+        call    ReadPCIEConfig  ;eax = 32bit config space memory
+
+        call    Print4PCIEConfig 
+        
+
+        add     edi, 4
+        jmp     @@ColLoop
+
+@@RowEnd:
+        mov     dx, offset StrCRLF
+        call    BiosPrintStringDollar
+        inc     bp
+        jmp     @@RowLoop
+
+@@Footer:
+        mov     dx, offset StrCRLF
+        call    BiosPrintStringDollar
+        mov     dx, offset StrEscHint
+        call    BiosPrintStringDollar
+        mov     dx, offset StrCRLF
+        call    BiosPrintStringDollar
+
+
+        mov     dx, offset StrPCIERollHint
+        call    BiosPrintStringDollar
+        mov     dx, offset StrCRLF
+        call    BiosPrintStringDollar
+
+        ; wait ESC
+@@Waitkey:
+        call    GetKeyBIOS
+        
+        cmp     al, 1Bh         ; ESC
+        je      @@Back
+
+        cmp     ah, 49h            ; PageUp
+        je      @@DoPgUp
+
+        cmp     ah, 51h            ; PageDown
+        je      @@DoPgDn
+
+        jmp     @@Waitkey
+
+@@DoPgUp:
+        cmp     CurPCIEPage,0
+        je      @@Waitkey
+
+        dec     CurPCIEPage
+        jmp     @@PrintScreen
+
+@@DoPgDn:
+        cmp     CurPCIEPage,15
+        je      @@Waitkey
+
+        inc     CurPCIEPage
+        jmp     @@PrintScreen
+
+@@Back:
+        pop     bp
+        pop     edi
+        pop     si
+        pop     dx
+        pop     cx
+        pop     bx
+        pop     ax
+        ret
+ShowPCIEConfigSpace endp
 
 ; --------------------------------------------
 ; PageLoop
@@ -1764,6 +2014,12 @@ DoDown:
         jmp     Show
 
 DoEnter:
+        call    PCIorPCIE
+        jz      IsPCIDev
+
+        call    ShowPCIEConfigSpace
+        jmp     Show
+IsPCIDev:
         call    ShowConfigSpace
         jmp     Show
 Exit:
