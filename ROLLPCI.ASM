@@ -14,6 +14,15 @@ EcamStartBus    db 0
 EcamEndBus      db 0
 Ecamfail        db 'MCFG not found', '$'
 
+; 1 = FindRSDP failed
+; 2 = RSDP checksum bad
+; 3 = RSDT checksum bad
+; 4 = XSDT checksum bad
+; 5 = MCFG not found
+; 6 = MCFG checksum bad
+; 7 = No valid allocation entry
+FailStep    db 0
+        
 
 RsdpSig db 'RSD PTR '
 
@@ -140,33 +149,34 @@ Testa proc far
         call    GetEcamBase 
         jc      McfgFail
 
-        mov     eax, EcamBase
-        call    PrintHex32
+        ; mov     eax, EcamBase
+        ; call    PrintHex32
 
-        mov     dx , offset StrCRLF
-        call    BiosPrintStringDollar
+        ; mov     dx , offset StrCRLF
+        ; call    BiosPrintStringDollar
 
-        mov     al, EcamStartBus
-        call    PrintHex8
+        ; mov     al, EcamStartBus
+        ; call    PrintHex8
 
-        mov     dx , offset StrCRLF
-        call    BiosPrintStringDollar
+        ; mov     dx , offset StrCRLF
+        ; call    BiosPrintStringDollar
 
-        mov     al, EcamEndBus
-        call    PrintHex8
+        ; mov     al, EcamEndBus
+        ; call    PrintHex8
 
-        mov     dx , offset StrCRLF
-        call    BiosPrintStringDollar
+        ; mov     dx , offset StrCRLF
+        ; call    BiosPrintStringDollar
 
-        ; call    InitPciDb
-        ; call    BuildPCIList
+        call    InitPciDb
+        call    BuildPCIList
         
         
-        ; call    PageLoop
+        call    PageLoop
         jmp     ExitP
+
 McfgFail:
-        ;mov     dx , offset Ecamfail
-        call    BiosPrintStringDollar
+        mov     al, FailStep
+        call    PrintHex8
 ExitP:
         xor     al, al
         call    SetRealModeLimit
@@ -205,7 +215,7 @@ IsRSDP8 proc
     mov  ecx, 8
 @@C:
     mov al, byte ptr es:[edi]
-    cmp al, byte ptr cs:[esi]
+    cmp al, byte ptr ds:[esi]
     jne @@Fail
     inc edi
     inc esi
@@ -292,30 +302,31 @@ FindRSDP endp
 GetEcamBase proc
     push ebx
     push esi
+    mov FailStep, 0
 
     call FindRSDP
-    jc   @@Fail
+    jc   @@Fail_RSDP
 
-    ; EDI = RSDP
-    mov al, byte ptr es:[edi+15]     ; Revision
-    cmp al, 2
-    jb  @@UseRSDT
+;     ; EDI = RSDP
+;     mov al, byte ptr es:[edi+15]     ; Revision
+;     cmp al, 2
+;     jb  @@UseRSDT
 
-    ; try XSDT if within 4GB and extended checksum ok
-    mov eax, dword ptr es:[edi+20]   ; Length
-    push edi
-    mov ecx, eax
-    call SumCheck                    ; extended checksum
-    pop edi
-    jnz @@UseRSDT
+;     ; try XSDT if within 4GB and extended checksum ok
+;     mov eax, dword ptr es:[edi+20]   ; Length
+;     push edi
+;     mov ecx, eax
+;     call SumCheck                    ; extended checksum
+;     pop edi
+;     jnz @@UseRSDT
 
-    ; XSDT address at +24 (QWORD)
-    mov eax, dword ptr es:[edi+24]   ; low
-    mov edx, dword ptr es:[edi+28]   ; high
-    test edx, edx
-    jnz @@UseRSDT                    ; >4GB ignore
-    mov edi, eax
-    jmp @@ParseXSDT
+;     ; XSDT address at +24 (QWORD)
+;     mov eax, dword ptr es:[edi+24]   ; low
+;     mov edx, dword ptr es:[edi+28]   ; high
+;     test edx, edx
+;     jnz @@UseRSDT                    ; >4GB ignore
+;     mov edi, eax
+;     jmp @@ParseXSDT
 
 @@UseRSDT:
     mov eax, dword ptr es:[edi+16]   ; RSDT addr
@@ -323,33 +334,47 @@ GetEcamBase proc
     jmp @@ParseRSDT
 
 @@ParseRSDT:
+    cmp dword ptr es:[edi], 'TDSR'   ; "RSDT"
+    jne @@Fail_notRSDT
     ; verify table checksum using Length
     mov eax, dword ptr es:[edi+4]    ; Length
     push edi
     mov ecx, eax
     call SumCheck
     pop edi
-    jnz @@Fail
+    jnz @@Fail_RSDTchecksum
 
     ; count = (Length-36)/4
     mov eax, dword ptr es:[edi+4]
     sub eax, 36
     shr eax, 2
     mov ebx, eax                     ; count
-    lea esi, [edi+36]                ; entry ptr
+    lea esi, [edi+36]                ; esi => entry ptr
 @@RLoop:
     test ebx, ebx
-    jz @@Fail
-    mov eax, dword ptr es:[esi]      ; table addr
-    push edi
-    mov edi, eax
-    ; signature "MCFG" ?
-    cmp dword ptr es:[edi], 'GFMC'   ; little-endian
-    pop edi
+    jz @@Fail_RSDT_NoMCFG
+
+    mov edi, dword ptr es:[esi]      ; edi => table addr
+
+    ; --- debug: 印 signature 四個字 ---
+;     mov  al, byte ptr es:[edi+0]
+;     call BiosPutChar
+;     mov  al, byte ptr es:[edi+1]
+;     call BiosPutChar
+;     mov  al, byte ptr es:[edi+2]
+;     call BiosPutChar
+;     mov  al, byte ptr es:[edi+3]
+;     call BiosPutChar
+;     mov  al, ' '
+;     call BiosPutChar
+    
+    ; --- robust compare: "MCFG" ---
+    cmp dword ptr es:[edi], 'GFCM'
     je  @@FoundMCFG_R
     add esi, 4
     dec ebx
     jmp @@RLoop
+
 
 @@FoundMCFG_R:
     ; EAX still table addr in previous load? reload safely
@@ -357,40 +382,42 @@ GetEcamBase proc
     mov edi, eax
     jmp @@ParseMCFG
 
-@@ParseXSDT:
-    mov eax, dword ptr es:[edi+4]    ; Length
-    push edi
-    mov ecx, eax
-    call SumCheck
-    pop edi
-    jnz @@Fail
+; @@ParseXSDT:
+;     cmp dword ptr es:[edi], 'TDSX'   ; "XSDT"
+;     jne @@UseRSDT                    ; 不是 XSDT 就回去走 RSDT
+;     mov eax, dword ptr es:[edi+4]    ; Length
+;     push edi
+;     mov ecx, eax
+;     call SumCheck
+;     pop edi
+;     jnz @@Fail_XSDTchecksum
 
-    ; count = (Length-36)/8
-    mov eax, dword ptr es:[edi+4]
-    sub eax, 36
-    shr eax, 3
-    mov ebx, eax
-    lea esi, [edi+36]
-@@XLoop:
-    test ebx, ebx
-    jz @@Fail
-    mov eax, dword ptr es:[esi]      ; low 32
-    mov edx, dword ptr es:[esi+4]    ; high 32
-    test edx, edx
-    jnz @@NextX
-    push edi
-    mov edi, eax
-    cmp dword ptr es:[edi], 'GFMC'
-    pop edi
-    je  @@FoundMCFG_X
-@@NextX:
-    add esi, 8
-    dec ebx
-    jmp @@XLoop
+;     ; count = (Length-36)/8
+;     mov eax, dword ptr es:[edi+4]
+;     sub eax, 36
+;     shr eax, 3
+;     mov ebx, eax
+;     lea esi, [edi+36]
+; @@XLoop:
+;     test ebx, ebx
+;     jz @@Fail_XSDT_NoMCFG
+;     mov eax, dword ptr es:[esi]      ; low 32
+;     mov edx, dword ptr es:[esi+4]    ; high 32
+;     test edx, edx
+;     jnz @@NextX
+;     push edi
+;     mov edi, eax
+;     cmp dword ptr es:[edi], 'GFMC'
+;     pop edi
+;     je  @@FoundMCFG_X
+; @@NextX:
+;     add esi, 8
+;     dec ebx
+;     jmp @@XLoop
 
-@@FoundMCFG_X:
-    mov eax, dword ptr es:[esi]
-    mov edi, eax
+; @@FoundMCFG_X:
+;     mov eax, dword ptr es:[esi]
+;     mov edi, eax
 
 @@ParseMCFG:
     ; verify MCFG checksum
@@ -399,7 +426,7 @@ GetEcamBase proc
     mov ecx, eax
     call SumCheck
     pop edi
-    jnz @@Fail
+    jnz @@Fail_MCFGchecksum
 
     ; allocations start at edi+44, each 16 bytes
     ;count = (Length - 44) / 16
@@ -413,7 +440,7 @@ GetEcamBase proc
     lea esi, [edi+44]
 @@ALoop:
     test ebx, ebx
-    jz @@Fail
+    jz @@Fail_MCFG_NoAlloc
 
     ; BaseAddress QWORD at [esi]
     mov eax, dword ptr es:[esi]      ; base low
@@ -423,7 +450,7 @@ GetEcamBase proc
 
     ; SegmentGroup at [esi+8]
     mov cx, word ptr es:[esi+8]
-    cmp cx, 0
+    cmp cx, 0                           ; SegmentGroup != 0 skip
     jne @@NextA
 
     ; StartBus/EndBus
@@ -444,11 +471,50 @@ GetEcamBase proc
     dec ebx
     jmp @@ALoop
 
+; -----------------------------
+; Unified fail exit
+; -----------------------------
 @@Fail:
     stc
     pop esi
     pop ebx
     ret
+
+; -----------------------------
+; Fail reason labels
+; -----------------------------
+@@Fail_RSDP:
+    mov FailStep, 1
+    jmp @@Fail
+
+@@Fail_notRSDT:
+    mov FailStep, 8
+    jmp @@Fail
+
+@@Fail_RSDTchecksum:
+    mov FailStep, 2
+    jmp @@Fail
+
+@@Fail_RSDT_NoMCFG:
+    mov FailStep, 3
+    jmp @@Fail
+
+; @@Fail_XSDTchecksum:
+;     mov FailStep, 4
+;     jmp @@Fail
+
+; @@Fail_XSDT_NoMCFG:
+;     mov FailStep, 5
+;     jmp @@Fail
+
+@@Fail_MCFGchecksum:
+    mov FailStep, 6
+    jmp @@Fail
+
+@@Fail_MCFG_NoAlloc:
+    mov FailStep, 7
+    jmp @@Fail
+
 GetEcamBase endp
 
 
