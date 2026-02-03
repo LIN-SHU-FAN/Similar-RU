@@ -1728,6 +1728,8 @@ ReadPCIEConfig proc
         shl     edx,12
         add     eax,edx ;fun
 
+        add     eax, EcamBase
+
         mov     eax, dword ptr es:[eax]  ; 讀 offset 0 的 DWORD
 
         ret
@@ -1841,8 +1843,6 @@ ShowPCIEConfigSpace proc
         movzx     ax, CurPCIEPage
         mov     al, al
         call    PrintHex1
-        mov     al, ' '
-        call    BiosPutChar
 
         ; row
         mov     ax, bp
