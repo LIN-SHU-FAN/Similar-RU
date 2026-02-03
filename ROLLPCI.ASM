@@ -21,10 +21,10 @@ Ecamfail        db 'MCFG not found', '$'
 ; 5 = MCFG not found
 ; 6 = MCFG checksum bad
 ; 7 = No valid allocation entry
-FailStep    db 0
+FailStep        db 0
         
 
-RsdpSig db 'RSD PTR '
+RsdpSig         db 'RSD PTR '
 
 DbHandle        dw 0FFFFh
 DbCount         dw 0
@@ -42,36 +42,39 @@ DevUpbound      dw 31
 FunUpbound      dw 7
 
 PCI_ENTRY struct
-    Bus     db ?
-    Dev     db ?
-    Fun     db ?
-    Vendor  dw ?
-    Device  dw ?
-    Class   db ?
-    SubCls  db ?
-    ProgIF  db ?
-    IsPCIe  db ?     ; 0 = PCI, 1 = PCIe
+    Bus         db ?
+    Dev         db ?
+    Fun         db ?
+    Vendor      dw ?
+    Device      dw ?
+    Class       db ?
+    SubCls      db ?
+    ProgIF      db ?
+    IsPCIe      db ?     ; 0 = PCI, 1 = PCIe
 PCI_ENTRY ends
 
 MAX_PCI_ENTRY equ 256
 
 PCIList   PCI_ENTRY MAX_PCI_ENTRY dup(<>)
-PCICount  dw 0
+PCICount        dw 0
 
 
 
 
-CurPage   dw 0
-CurRow    dw 0
+CurPage         dw 0
+CurRow          dw 0
 
-PAGE_SIZE   equ 10
+PAGE_SIZE       equ 10
 
-CurAttr db 07h     
+CurAttr         db 07h     
 
-StrPage     db 'Page ', '$'
-StrSlash    db '/', '$'
-StrHint     db 'PgUp/PgDn to scroll, Q to quit', '$'
+StrPage         db 'Page ', '$'
+StrSlash        db '/', '$'
 
+StrRowTitle     db 'Device Name', '$'
+StrRowTitle1     db 'PCI/PCIe DeviceID:VendorID Bus:Dev:Fun', '$'
+
+StrHint         db 'PgUp/PgDn: roll page, Up/Down: select device, Enter: view device, Q: quit', '$'
 
 TargetVID       dw 0
 TargetDID       dw 0
@@ -110,22 +113,22 @@ DeviceData      db 4 dup(0),'h  Vendor ID = '
 VendorData      db 4 dup(0),'h','$'
 
 
-PrintBuf    db 64 dup('$')
+PrintBuf        db 64 dup('$')
 
-StrPCI      db 'PCI ', '$'
-StrPCIe     db 'PCIe', '$'
-StrSpace    db ' ', '$'
-StrColon    db ':', '$'
-StrDot      db '.', '$'
-StrCRLF     db 13,10,'$'
+StrPCI          db 'PCI ', '$'
+StrPCIe         db 'PCIe', '$'
+StrSpace        db ' ', '$'
+StrColon        db ':', '$'
+StrDot          db '.', '$'
+StrCRLF         db 13,10,'$'
 
 
-StrCfgTitle  db 'PCI Configuration Space (256B)', '$'
-StrPCIECfgTitle  db 'PCIe Configuration Space (4096B)', '$'
-StrEscHint   db 'ESC to back', '$'
-StrPCIERollHint   db 'PgUp/PgDn to scroll', '$'
+StrCfgTitle     db 'PCI Configuration Space (256B)', '$'
+StrPCIECfgTitle db 'PCIe Configuration Space (4096B)', '$'
+StrEscHint      db 'ESC to back', '$'
+StrPCIERollHint db 'PgUp/PgDn to scroll', '$'
 
-CurPCIEPage  db 0
+CurPCIEPage     db 0
 
 
 
@@ -192,124 +195,127 @@ EmptyRoutine    proc FAR
         ret
 EmptyRoutine    endp
 
-; SumCheck: AL = (sum of [EDI..EDI+ECX-1]) mod 256
-; return ZF=1 if sum==0
-SumCheck proc
-    push edi
-    push ecx
-    xor eax, eax
-@@L:
-    test ecx, ecx
-    jz   @@Done
-    add  al, byte ptr es:[edi]
-    inc  edi
-    dec  ecx
-    jmp  @@L
-@@Done:
-    pop ecx
-    pop edi
-    test al, al
-    ret
-SumCheck endp
 
-; safer byte-compare "RSD PTR "
-IsRSDP8 proc
-    push esi
-    lea  esi, RsdpSig
-    mov  ecx, 8
-@@C:
-    mov al, byte ptr es:[edi]
-    cmp al, byte ptr ds:[esi]
-    jne @@Fail
-    inc edi
-    inc esi
-    loop @@C
-    xor ax, ax      ; ZF=1 trick? not needed
-    pop esi
-    ; indicate match by setting ZF=1 via cmp reg,reg
-    xor ax, ax
-    cmp ax, ax
-    ret
-@@Fail:
-    pop esi
-    or  ax, 1
-    cmp ax, 0       ; ZF=0
-    ret
-IsRSDP8 endp
 
 ; Get EBDA base phys addr in EDI
 GetEbdaBase proc
     ; EBDA segment stored at phys 0x40E
-    mov edi, 040Eh
-    mov ax, word ptr es:[edi]
-    movzx edi, ax
-    shl edi, 4
+    mov         edi, 040Eh
+    mov         ax, word ptr es:[edi]
+    movzx       edi, ax
+    shl         edi, 4
     ret
 GetEbdaBase endp
 
+; safer byte-compare "RSD PTR "
+; find it ZF=1
+IsRSDP8 proc
+    push        esi
+    lea         esi, RsdpSig
+    mov         ecx, 8
+@@C:
+    mov         al, byte ptr es:[edi]
+    cmp         al, byte ptr ds:[esi]
+    jne         @@Fail
+    inc         edi
+    inc         esi
+    loop        @@C
+    xor         ax, ax      
+    pop         esi
+    xor         ax, ax
+    cmp         ax, ax
+    ret
+@@Fail:
+    pop         esi
+    or          ax, 1
+    cmp         ax, 0       ; ZF=0
+    ret
+IsRSDP8 endp
+
+; intput: ecx = check sum range,edi = check sum start address(byte)
+; SumCheck: AL = (sum of [EDI+0..EDI+ECX-1]) mod 256
+; return ZF=1 if sum==0
+SumCheck proc
+    push        edi
+    push        ecx
+    xor         eax, eax
+@@L:
+    test        ecx, ecx
+    jz          @@Done
+    add         al, byte ptr es:[edi] ;只加到 8-bit 的 AL，超過 255 會自然溢位（mod 256）
+    inc         edi
+    dec         ecx
+    jmp         @@L
+@@Done:
+    pop         ecx
+    pop         edi
+    test        al, al
+    ret
+SumCheck endp
+
 ; FindRSDP: return EDI = RSDP phys addr, CF=0 if found else CF=1
 FindRSDP proc
-    push ebx
+    push        ebx
 
     ; 1) scan EBDA first 1KB
-    call GetEbdaBase
-    mov ebx, edi            ; start
-    add ebx, 400h           ; end = start+1KB
+    call        GetEbdaBase         ; edi = start address (offset)
+    mov         ebx, edi            
+    add         ebx, 400h           ; end = start+1KB
 @@ScanEbda:
-    cmp edi, ebx
-    jae @@ScanHi
-    push edi
-    call IsRSDP8
-    pop edi
-    jnz @@Next16
+    cmp         edi, ebx
+    jae         @@ScanHi
+    push        edi
+    call        IsRSDP8
+    pop         edi
+    jnz         @@Next16
     ; checksum first 20 bytes
-    push edi
-    mov ecx, 20
-    call SumCheck
-    pop edi
-    jnz @@Next16            ; sum!=0
+    push        edi
+    mov         ecx, 20
+    call        SumCheck
+    pop         edi
+    jnz         @@Next16            ; sum!=0
     clc
-    pop ebx
+    pop         ebx
     ret
 @@Next16:
-    add edi, 10h
-    jmp @@ScanEbda
+    add         edi, 10h
+    jmp         @@ScanEbda
 
 @@ScanHi:
-    mov edi, 0E0000h
+    mov         edi, 0E0000h
 @@ScanHiLoop:
-    cmp edi, 100000h
-    jae @@NotFound
-    push edi
-    call IsRSDP8
-    pop edi
-    jnz @@Next16Hi
-    push edi
-    mov ecx, 20
-    call SumCheck
-    pop edi
-    jnz @@Next16Hi
+    cmp         edi, 100000h
+    jae         @@NotFound
+    push        edi
+    call        IsRSDP8
+    pop         edi
+    jnz         @@Next16Hi
+    push        edi
+    mov         ecx, 20
+    call        SumCheck
+    pop         edi
+    jnz         @@Next16Hi
     clc
-    pop ebx
+    pop         ebx
     ret
 @@Next16Hi:
-    add edi, 10h
-    jmp @@ScanHiLoop
+    add         edi, 10h
+    jmp         @@ScanHiLoop
 
 @@NotFound:
     stc
-    pop ebx
+    pop         ebx
     ret
 FindRSDP endp
 
 ; GetEcamBase: sets EcamBase/EcamStartBus/EcamEndBus, CF=0 success
 GetEcamBase proc
-    push ebx
-    push esi
-    mov FailStep, 0
+    push        ebx
+    push        esi
+    mov         FailStep, 0
 
-    call FindRSDP
-    jc   @@Fail_RSDP
+    call        FindRSDP
+    jc          @@Fail_RSDP
 
 ;     ; EDI = RSDP
 ;     mov al, byte ptr es:[edi+15]     ; Revision
@@ -333,32 +339,32 @@ GetEcamBase proc
 ;     jmp @@ParseXSDT
 
 @@UseRSDT:
-    mov eax, dword ptr es:[edi+16]   ; RSDT addr
-    mov edi, eax
-    jmp @@ParseRSDT
+    mov         eax, dword ptr es:[edi+16]   ; RSDT addr
+    mov         edi, eax
+    jmp         @@ParseRSDT
 
 @@ParseRSDT:
-    cmp dword ptr es:[edi], 'TDSR'   ; "RSDT"
-    jne @@Fail_notRSDT
+    cmp         dword ptr es:[edi], 'TDSR'   ; "RSDT"
+    jne         @@Fail_notRSDT
     ; verify table checksum using Length
-    mov eax, dword ptr es:[edi+4]    ; Length
-    push edi
-    mov ecx, eax
-    call SumCheck
-    pop edi
-    jnz @@Fail_RSDTchecksum
+    mov         eax, dword ptr es:[edi+4]    ; Length
+    push        edi
+    mov         ecx, eax
+    call        SumCheck
+    pop         edi
+    jnz         @@Fail_RSDTchecksum
 
     ; count = (Length-36)/4
-    mov eax, dword ptr es:[edi+4]
-    sub eax, 36
-    shr eax, 2
-    mov ebx, eax                     ; count
-    lea esi, [edi+36]                ; esi => entry ptr
+    mov         eax, dword ptr es:[edi+4]
+    sub         eax, 36
+    shr         eax, 2
+    mov         ebx, eax                     ; count
+    lea         esi, [edi+36]                ; esi => entry ptr
 @@RLoop:
-    test ebx, ebx
-    jz @@Fail_RSDT_NoMCFG
+    test        ebx, ebx
+    jz          @@Fail_RSDT_NoMCFG
 
-    mov edi, dword ptr es:[esi]      ; edi => table addr
+    mov         edi, dword ptr es:[esi]      ; edi => table addr
 
     ; --- debug: 印 signature 四個字 ---
 ;     mov  al, byte ptr es:[edi+0]
@@ -373,18 +379,18 @@ GetEcamBase proc
 ;     call BiosPutChar
     
     ; --- robust compare: "MCFG" ---
-    cmp dword ptr es:[edi], 'GFCM'
-    je  @@FoundMCFG_R
-    add esi, 4
-    dec ebx
-    jmp @@RLoop
+    cmp         dword ptr es:[edi], 'GFCM'
+    je          @@FoundMCFG_R
+    add         esi, 4
+    dec         ebx
+    jmp         @@RLoop
 
 
 @@FoundMCFG_R:
     ; EAX still table addr in previous load? reload safely
-    mov eax, dword ptr es:[esi]
-    mov edi, eax
-    jmp @@ParseMCFG
+    mov         eax, dword ptr es:[esi]
+    mov         edi, eax
+    jmp         @@ParseMCFG
 
 ; @@ParseXSDT:
 ;     cmp dword ptr es:[edi], 'TDSX'   ; "XSDT"
@@ -425,83 +431,83 @@ GetEcamBase proc
 
 @@ParseMCFG:
     ; verify MCFG checksum
-    mov eax, dword ptr es:[edi+4]    ; Length
-    push edi
-    mov ecx, eax
-    call SumCheck
-    pop edi
-    jnz @@Fail_MCFGchecksum
+    mov         eax, dword ptr es:[edi+4]    ; Length
+    push        edi
+    mov         ecx, eax
+    call        SumCheck
+    pop         edi
+    jnz         @@Fail_MCFGchecksum
 
     ; allocations start at edi+44, each 16 bytes
     ;count = (Length - 44) / 16
-    mov eax, dword ptr es:[edi+4]
-    sub eax, 44
-    xor edx, edx
-    mov ecx, 16
-    div ecx
-    mov ebx, eax          ; count
+    mov         eax, dword ptr es:[edi+4]
+    sub         eax, 44
+    xor         edx, edx
+    mov         ecx, 16
+    div         ecx
+    mov         ebx, eax          ; count
 
-    lea esi, [edi+44]
+    lea         esi, [edi+44]
 @@ALoop:
-    test ebx, ebx
-    jz @@Fail_MCFG_NoAlloc
+    test        ebx, ebx
+    jz          @@Fail_MCFG_NoAlloc
 
     ; BaseAddress QWORD at [esi]
-    mov eax, dword ptr es:[esi]      ; base low
-    mov edx, dword ptr es:[esi+4]    ; base high
-    test edx, edx
-    jnz @@NextA                       ; >4GB skip
+    mov         eax, dword ptr es:[esi]      ; base low
+    mov         edx, dword ptr es:[esi+4]    ; base high
+    test        edx, edx
+    jnz         @@NextA                       ; >4GB skip
 
     ; SegmentGroup at [esi+8]
-    mov cx, word ptr es:[esi+8]
-    cmp cx, 0                           ; SegmentGroup != 0 skip
-    jne @@NextA
+    mov         cx, word ptr es:[esi+8]
+    cmp         cx, 0                           ; SegmentGroup != 0 skip
+    jne         @@NextA
 
     ; StartBus/EndBus
-    mov dl, byte ptr es:[esi+10]
-    mov dh, byte ptr es:[esi+11]
+    mov         dl, byte ptr es:[esi+10]
+    mov         dh, byte ptr es:[esi+11]
 
     ; pick this one
-    mov dword ptr EcamBase, eax
-    mov EcamStartBus, dl
-    mov EcamEndBus, dh
+    mov         dword ptr EcamBase, eax
+    mov         EcamStartBus, dl
+    mov         EcamEndBus, dh
     clc
-    pop esi
-    pop ebx
+    pop         esi
+    pop         ebx
     ret
 
 @@NextA:
-    add esi, 16
-    dec ebx
-    jmp @@ALoop
+    add         esi, 16
+    dec         ebx
+    jmp         @@ALoop
 
 ; -----------------------------
 ; Unified fail exit
 ; -----------------------------
 @@Fail:
     stc
-    pop esi
-    pop ebx
+    pop         esi
+    pop         ebx
     ret
 
 ; -----------------------------
 ; Fail reason labels
 ; -----------------------------
 @@Fail_RSDP:
-    mov FailStep, 1
-    jmp @@Fail
+    mov         FailStep, 1
+    jmp         @@Fail
 
 @@Fail_notRSDT:
-    mov FailStep, 8
-    jmp @@Fail
+    mov         FailStep, 8
+    jmp         @@Fail
 
 @@Fail_RSDTchecksum:
-    mov FailStep, 2
-    jmp @@Fail
+    mov         FailStep, 2
+    jmp         @@Fail
 
 @@Fail_RSDT_NoMCFG:
-    mov FailStep, 3
-    jmp @@Fail
+    mov         FailStep, 3
+    jmp         @@Fail
 
 ; @@Fail_XSDTchecksum:
 ;     mov FailStep, 4
@@ -512,12 +518,12 @@ GetEcamBase proc
 ;     jmp @@Fail
 
 @@Fail_MCFGchecksum:
-    mov FailStep, 6
-    jmp @@Fail
+    mov         FailStep, 6
+    jmp         @@Fail
 
 @@Fail_MCFG_NoAlloc:
-    mov FailStep, 7
-    jmp @@Fail
+    mov         FailStep, 7
+    jmp         @@Fail
 
 GetEcamBase endp
 
@@ -805,21 +811,6 @@ NextBus:
 Done:
         ret
 BuildPCIList endp
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -1403,6 +1394,18 @@ PrintPage proc
         push di
 
         call ClearScreen
+        ;row title
+        mov     dx, offset StrRowTitle
+        call    BiosPrintStringDollar
+
+        mov     dx, offset StrCRLF
+        call    BiosPrintStringDollar
+
+        mov     dx, offset StrRowTitle1
+        call    BiosPrintStringDollar
+        
+        mov     dx, offset StrCRLF
+        call    BiosPrintStringDollar
 
         ; start = CurPage * PAGE_SIZE
         mov     ax, CurPage
@@ -1580,6 +1583,37 @@ PCIorPCIE proc
 PCIorPCIE endp
 
 
+;intput eax = 32bit config space
+Print4Config proc
+        push    edx
+        mov     edx,eax ;edx = PCIE config space
+
+        call    PrintHex8      ;print al 
+        mov     al, ' '
+        call    BiosPutChar
+
+        mov     al , ah         
+        call    PrintHex8      ;print al 
+        mov     al, ' '
+        call    BiosPutChar
+
+
+        shr     eax,16
+        call    PrintHex8      ;print al  
+        mov     al, ' '
+        call    BiosPutChar
+
+        mov     al , ah 
+        call    PrintHex8      ;print al 
+        mov     al, ' '
+        call    BiosPutChar
+
+
+        mov     eax , edx
+        pop     edx
+        ret
+Print4Config endp
+
 ; ==================================================
 ; ShowConfigSpace
 ; - uses CurPage, CurRow, PCIList, PCICount
@@ -1672,13 +1706,16 @@ ShowConfigSpace proc
         add     ax, di
         mov     al, al          ; AL = offset
 
-        call    ReadConfigByte  ; AL = byte
-        call    PrintHex8       ; prints 2 hex chars
+        ; call    ReadConfigByte  ; AL = byte
+        ; call    PrintHex8       ; prints 2 hex chars
 
-        mov     al, ' '
-        call    BiosPutChar
+        ; mov     al, ' '
+        ; call    BiosPutChar
 
-        inc     di
+        call    ReadConfigDword
+        call    Print4Config
+
+        add     di,4
         jmp     @@ColLoop
 
 @@RowEnd:
@@ -1734,38 +1771,6 @@ ReadPCIEConfig proc
 
         ret
 ReadPCIEConfig endp
-
-
-;intput eax = 32bit PCIE config space
-Print4PCIEConfig proc
-        push    edx
-        mov     edx,eax ;edx = PCIE config space
-
-        call    PrintHex8      ;print al 
-        mov     al, ' '
-        call    BiosPutChar
-
-        mov     al , ah         
-        call    PrintHex8      ;print al 
-        mov     al, ' '
-        call    BiosPutChar
-
-
-        shr     eax,16
-        call    PrintHex8      ;print al  
-        mov     al, ' '
-        call    BiosPutChar
-
-        mov     al , ah 
-        call    PrintHex8      ;print al 
-        mov     al, ' '
-        call    BiosPutChar
-
-
-        mov     eax , edx
-        pop     edx
-        ret
-Print4PCIEConfig endp
 
 ShowPCIEConfigSpace proc
         push    ax
@@ -1870,7 +1875,7 @@ ShowPCIEConfigSpace proc
 
         call    ReadPCIEConfig  ;eax = 32bit config space memory
 
-        call    Print4PCIEConfig 
+        call    Print4Config 
         
 
         add     edi, 4
