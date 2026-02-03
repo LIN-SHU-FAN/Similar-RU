@@ -72,7 +72,7 @@ StrPage         db 'Page ', '$'
 StrSlash        db '/', '$'
 
 StrRowTitle     db 'Device Name', '$'
-StrRowTitle1     db 'PCI/PCIe DeviceID:VendorID Bus:Dev:Fun', '$'
+StrRowTitle1    db 'PCI/PCIe DeviceID:VendorID Bus:Dev:Fun', '$'
 
 StrHint         db 'PgUp/PgDn: roll page, Up/Down: select device, Enter: view device, Q: quit', '$'
 
@@ -1918,16 +1918,24 @@ ShowPCIEConfigSpace proc
 
 @@DoPgUp:
         cmp     CurPCIEPage,0
-        je      @@Waitkey
+        je      @@LoopDoPgUp
 
         dec     CurPCIEPage
         jmp     @@PrintScreen
+@@LoopDoPgUp:
+        mov     CurPCIEPage,15
+        jmp     @@PrintScreen
+
 
 @@DoPgDn:
         cmp     CurPCIEPage,15
-        je      @@Waitkey
+        je      @@LoopDoPgDn
 
         inc     CurPCIEPage
+        jmp     @@PrintScreen
+
+@@LoopDoPgDn:
+        mov     CurPCIEPage,0
         jmp     @@PrintScreen
 
 @@Back:
@@ -1986,13 +1994,28 @@ KeyWait:
 
 DoPgUp:
         mov CurRow, 0
+
         cmp CurPage, 0
-        je  Show
+        je  LoopPageUp
         dec CurPage
+        jmp Show
+LoopPageUp:
+        ; maxPage = (PCICount-1) / PAGE_SIZE
+        mov ax, PCICount
+        cmp ax, 0
+        je  Show
+        dec ax
+        xor dx, dx
+        mov bx, PAGE_SIZE
+        div bx                 ; AX = maxPage
+
+        mov CurPage,ax
+
         jmp Show
 
 DoPgDn:
         mov CurRow, 0
+
         ; maxPage = (PCICount-1) / PAGE_SIZE
         mov ax, PCICount
         cmp ax, 0
@@ -2003,19 +2026,32 @@ DoPgDn:
         div bx                 ; AX = maxPage
 
         cmp CurPage, ax
-        jae Show
+        jae LoopPageDn
         inc CurPage
         jmp Show
+
+LoopPageDn:
+        mov CurPage,0
+        jmp Show
+
 DoUp:
         cmp CurRow, 0
-        je  Show
+        je  LoopRowUp
         dec CurRow
         jmp Show
+
+LoopRowUp:
+        call    GetLastRowOnPage    ; AX=LastRow
+        mov     CurRow,ax
+        jmp     Show         
 DoDown:
         call    GetLastRowOnPage    ; AX=LastRow
         cmp     CurRow, ax
-        jae     Show                ; CurRow >= LastRow → 不動
+        jae     LoopRowDown                
         inc     CurRow
+        jmp     Show
+LoopRowDown:
+        mov     CurRow,0
         jmp     Show
 
 DoEnter:
