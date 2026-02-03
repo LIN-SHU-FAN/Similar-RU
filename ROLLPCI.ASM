@@ -760,9 +760,9 @@ BuildPCIList proc
         ; reset count
         mov     PCICount, 0
 
-        mov     bx, 0                          ; Bus
+        mov     bl, EcamStartBus             ; Bus
 Bus_Loop_BL:
-        cmp     bx, BusUpbound
+        cmp     bl, EcamEndBus
         ja      Done
 
         mov     cx, 0                          ; Device
@@ -805,10 +805,11 @@ NextDev:
         jmp     Dev_Loop_CL
 
 NextBus:
-        inc     bx
+        inc     bl
         jmp     Bus_Loop_BL
 
 Done:
+        movzx   bx, bl
         ret
 BuildPCIList endp
 
