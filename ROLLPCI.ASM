@@ -833,9 +833,6 @@ BuildPCIList proc
         xor     bx,bx
         mov     bl, EcamStartBus             ; Bus
 Bus_Loop_BL:
-        cmp     bl, EcamEndBus
-        ja      Done
-
         mov     cx, 0                          ; Device
 Dev_Loop_CL:
         cmp     cx, DevUpbound
@@ -845,29 +842,15 @@ Dev_Loop_CL:
         xor     si, si                         ; Fun = 0
         call    ReadVendorDevice               ; returns EAX = DevID:VenID
 
-        ; mov     dx , offset ReadVendorDevicestr
-        ; call    BiosPrintStringDollar
-        ; mov     dx , offset StrCRLF
-        ; call    BiosPrintStringDollar
-
         cmp     ax, 0FFFFh                     ; if VenID = 0FFFF => not device
         je      NextDev                        ; no device at fun0
 
         ; store fun0
         call    StoreOneEntry
 
-        ; mov     dx , offset StoreOneEntrystr
-        ; call    BiosPrintStringDollar
-        ; mov     dx , offset StrCRLF
-        ; call    BiosPrintStringDollar
-
         ; check multi-function (Header Type bit7) at offset 0Ch
         call    ReadHeaderType                 ; returns AL = HeaderType
 
-        ; mov     dx , offset ReadHeaderTypestr
-        ; call    BiosPrintStringDollar
-        ; mov     dx , offset StrCRLF
-        ; call    BiosPrintStringDollar
 
         test    al, 80h
         jz      NextDev                        ; single function
@@ -893,6 +876,8 @@ NextDev:
         jmp     Dev_Loop_CL
 
 NextBus:
+        cmp     bl, EcamEndBus
+        je      Done
         inc     bl
         jmp     Bus_Loop_BL
 
