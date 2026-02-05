@@ -30,6 +30,13 @@ DbHandle        dw 0FFFFh
 DbCount         dw 0
 DbStrBase       dd 0              
 DbFilename      db 'PCIDB.BIN',0
+Dbfailstr       db 'Dbfail', '$'
+MCFGfailstr       db 'MCFGfail', '$'
+ReadVendorDevicestr db 'ReadVendorDevicestr', '$'
+StoreOneEntrystr db 'StoreOneEntrystr', '$'
+ReadHeaderTypestr db 'ReadHeaderTypestr', '$'
+Inputerrorstr db 'Inputerrorstr', '$'
+
 
 EntryBuf        db 8 dup(0)       ; VID(2) DID(2) OFF(4)
 TmpCh           db 0
@@ -150,40 +157,78 @@ Testa proc far
 
         xor     ax, ax
         mov     es, ax
+        
+
+
+        mov     al,'A'
+        call    BiosPutChar
         mov     al, 1
         call    SetRealModeLimit ;es set -> big real mode
 
+
+        mov     al,'B'
+        call    BiosPutChar
         call    GetEcamBase 
         jc      McfgFail
 
-        ; mov     eax, EcamBase
-        ; call    PrintHex32
+        mov     dx , offset StrCRLF
+        call    BiosPrintStringDollar
 
-        ; mov     dx , offset StrCRLF
-        ; call    BiosPrintStringDollar
+        mov     eax, EcamBase
+        call    PrintHex32
 
-        ; mov     al, EcamStartBus
-        ; call    PrintHex8
+        mov     dx , offset StrCRLF
+        call    BiosPrintStringDollar
 
-        ; mov     dx , offset StrCRLF
-        ; call    BiosPrintStringDollar
+        mov     al, EcamStartBus
+        call    PrintHex8
 
-        ; mov     al, EcamEndBus
-        ; call    PrintHex8
+        mov     dx , offset StrCRLF
+        call    BiosPrintStringDollar
 
-        ; mov     dx , offset StrCRLF
-        ; call    BiosPrintStringDollar
+        mov     al, EcamEndBus
+        call    PrintHex8
 
+        mov     dx , offset StrCRLF
+        call    BiosPrintStringDollar
+
+        mov     al,'C'
+        call    BiosPutChar
         call    InitPciDb
+        jc      InitPciDbFail
+
+        mov     al,'D'
+        call    BiosPutChar
         call    BuildPCIList
-        
-        
+
+        mov     al,'E'
+        call    BiosPutChar
         call    PageLoop
+
+        mov     al,'F'
+        call    BiosPutChar
         jmp     ExitP
+
 
 McfgFail:
         mov     al, FailStep
         call    PrintHex8
+
+        mov     dx , offset MCFGfailstr
+        call    BiosPrintStringDollar
+
+        mov     dx , offset StrCRLF
+        call    BiosPrintStringDollar
+
+        jmp     ExitP
+InitPciDbFail:
+        mov     dx , offset Dbfailstr
+        call    BiosPrintStringDollar
+
+        mov     dx , offset StrCRLF
+        call    BiosPrintStringDollar
+
+        jmp     ExitP
 ExitP:
         xor     al, al
         call    SetRealModeLimit
@@ -607,6 +652,19 @@ ReadHeaderType endp
 ; ==================================================
 ReadConfigDword proc
 
+        ; 檢查 bus 是否在 0..255
+        cmp     bh, 0
+        jne     @@inputerror
+
+        ; dev 是否 <= 31
+        cmp     cx, 31
+        ja      @@inputerror
+
+        ; fun 是否 <= 7
+        cmp     si, 7
+        ja      @@inputerror
+
+
         xor     edx,edx
         mov     dl,al
         and     dl, 0FCh        ;ensure bit0,bit1 =0
@@ -626,11 +684,24 @@ ReadConfigDword proc
         shl     edx, 8
         or      eax, edx
 
+
         mov     dx, 0CF8h
         out     dx, eax
         mov     dx, 0CFCh
         in      eax, dx
         
+        ret
+@@inputerror:
+
+        mov     dx , offset Inputerrorstr
+        call    BiosPrintStringDollar
+
+        mov     dx , offset StrCRLF
+        call    BiosPrintStringDollar
+
+        mov     ax, 4C01h      ; AH=4Ch terminate, AL=01 errorlevel
+        int     21h
+
         ret
 ReadConfigDword endp
 
@@ -759,7 +830,7 @@ StoreOneEntry endp
 BuildPCIList proc
         ; reset count
         mov     PCICount, 0
-
+        xor     bx,bx
         mov     bl, EcamStartBus             ; Bus
 Bus_Loop_BL:
         cmp     bl, EcamEndBus
@@ -773,14 +844,31 @@ Dev_Loop_CL:
         ; -------- function 0 first --------
         xor     si, si                         ; Fun = 0
         call    ReadVendorDevice               ; returns EAX = DevID:VenID
+
+        ; mov     dx , offset ReadVendorDevicestr
+        ; call    BiosPrintStringDollar
+        ; mov     dx , offset StrCRLF
+        ; call    BiosPrintStringDollar
+
         cmp     ax, 0FFFFh                     ; if VenID = 0FFFF => not device
         je      NextDev                        ; no device at fun0
 
         ; store fun0
         call    StoreOneEntry
 
+        ; mov     dx , offset StoreOneEntrystr
+        ; call    BiosPrintStringDollar
+        ; mov     dx , offset StrCRLF
+        ; call    BiosPrintStringDollar
+
         ; check multi-function (Header Type bit7) at offset 0Ch
         call    ReadHeaderType                 ; returns AL = HeaderType
+
+        ; mov     dx , offset ReadHeaderTypestr
+        ; call    BiosPrintStringDollar
+        ; mov     dx , offset StrCRLF
+        ; call    BiosPrintStringDollar
+
         test    al, 80h
         jz      NextDev                        ; single function
 
